@@ -60,3 +60,23 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# macOS
+.DS_Store
+
+# Python / Backend / Engine
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+engine/.venv/
+engine/__pycache__/
+engine/*.pyc
+
+# Secrets – NEVER commit
+.env
+.env.*
+*.env
+
+# Editor
+.vscode/
+.idea/
