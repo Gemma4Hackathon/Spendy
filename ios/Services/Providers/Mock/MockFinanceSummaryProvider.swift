@@ -1,37 +1,15 @@
 import Foundation
 
-// MARK: - Finance Summary DTO
-struct FinanceSummary {
-    var totalSpent: Double
-    var topCategory: SpendingCategory
-    var riskCategories: [SpendingCategory]
-    var aiMessage: String
-    var categoryBreakdown: [SpendingCategory: Double]
-}
-
-// MARK: - Protocol
-protocol APIServiceProtocol {
-    func fetchFinanceSummary(entries: [SpendingEntry]) async -> FinanceSummary
-    func extractHealthReport(imageData: Data) async throws -> HealthReport
-    func generateInsights(
-        profile: UserProfile,
-        spending: [SpendingEntry],
-        health: HealthReport
-    ) async throws -> InsightResult
-}
-
-// MARK: - Mock Service
-final class MockAPIService: APIServiceProtocol {
-
+final class MockFinanceSummaryProvider: FinanceSummaryProviding {
     func fetchFinanceSummary(entries: [SpendingEntry]) async -> FinanceSummary {
         try? await Task.sleep(nanoseconds: 900_000_000)
 
         var breakdown: [SpendingCategory: Double] = [:]
         entries.forEach { breakdown[$0.category, default: 0] += $0.amount }
 
-        let total      = entries.reduce(0) { $0 + $1.amount }
-        let top        = breakdown.max(by: { $0.value < $1.value })?.key ?? .other
-        let beverage   = (breakdown[.beverages] ?? 0) + (breakdown[.coffee] ?? 0)
+        let total = entries.reduce(0) { $0 + $1.amount }
+        let top = breakdown.max(by: { $0.value < $1.value })?.key ?? .other
+        let beverage = (breakdown[.beverages] ?? 0) + (breakdown[.coffee] ?? 0)
         let deliveryNT = Int(breakdown[.foodDelivery] ?? 0)
         let beveragePct = total > 0 ? Int(beverage / total * 100) : 0
 
@@ -55,19 +33,5 @@ final class MockAPIService: APIServiceProtocol {
             aiMessage: message,
             categoryBreakdown: breakdown
         )
-    }
-
-    func extractHealthReport(imageData: Data) async throws -> HealthReport {
-        try? await Task.sleep(nanoseconds: 2_500_000_000)   // simulate OCR
-        return .demo
-    }
-
-    func generateInsights(
-        profile: UserProfile,
-        spending: [SpendingEntry],
-        health: HealthReport
-    ) async throws -> InsightResult {
-        try? await Task.sleep(nanoseconds: 1_800_000_000)   // simulate LLM
-        return .demo
     }
 }

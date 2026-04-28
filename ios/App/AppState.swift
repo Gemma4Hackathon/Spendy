@@ -18,6 +18,7 @@ final class AppState {
     var isProcessingHealth: Bool     = false
     var isGeneratingInsights: Bool   = false
     var healthScanImageData: Data?   = nil
+    var lastInferenceSource: String  = "Mock"
 
     // MARK: - Computed
     var totalMonthlySpent: Double {

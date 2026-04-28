@@ -2,11 +2,11 @@ import SwiftUI
 
 struct FinanceAssistantView: View {
     @Environment(AppState.self) var appState
+    @Environment(AppEnvironment.self) var appEnvironment
     @State private var summary: FinanceSummary? = nil
     @State private var isLoading = false
     @State private var displayedText = ""
     @State private var appeared = false
-    private let service: APIServiceProtocol = MockAPIService()
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -180,8 +180,9 @@ struct FinanceAssistantView: View {
     private func loadSummary() async {
         isLoading = true
         displayedText = ""
-        let result = await service.fetchFinanceSummary(entries: appState.spendingEntries)
+        let result = await appEnvironment.router.financeProvider.fetchFinanceSummary(entries: appState.spendingEntries)
         summary = result
+        appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
         isLoading = false
         startTypewriter(text: result.aiMessage)
     }
@@ -201,5 +202,9 @@ struct FinanceAssistantView: View {
 
 #Preview {
     let s = AppState(); s.loadDemo()
-    return NavigationStack { FinanceAssistantView().environment(s) }
+    return NavigationStack {
+        FinanceAssistantView()
+            .environment(s)
+            .environment(AppEnvironment.previewMock())
+    }
 }

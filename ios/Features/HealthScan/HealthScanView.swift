@@ -3,12 +3,12 @@ import PhotosUI
 
 struct HealthScanView: View {
     @Environment(AppState.self) var appState
+    @Environment(AppEnvironment.self) var appEnvironment
     @State private var selectedItem: PhotosPickerItem? = nil
     @State private var isProcessing = false
     @State private var pulseScale: CGFloat = 1.0
     @State private var appeared = false
     @State private var navigateToResults = false
-    private let service: APIServiceProtocol = MockAPIService()
 
     var body: some View {
         ZStack {
@@ -148,8 +148,21 @@ struct HealthScanView: View {
         isProcessing = true
         if let data = try? await item.loadTransferable(type: Data.self) {
             appState.healthScanImageData = data
-            let report = try? await service.extractHealthReport(imageData: data)
-            appState.healthReport = report ?? .demo
+            do {
+                if appEnvironment.route == .onDevice && !appEnvironment.canRunOnDeviceInference {
+                    // Fallback to demo when local model is not ready in hackathon builds.
+                    appState.healthReport = .demo
+                    appState.lastInferenceSource = InferenceSourceLabel.mock.rawValue
+                } else {
+                    let report = try await appEnvironment.router.healthExtractor.extractHealthReport(imageData: data)
+                    appState.healthReport = report
+                    appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
+                }
+            } catch {
+                appEnvironment.markServiceError(error)
+                appState.healthReport = .demo
+                appState.lastInferenceSource = InferenceSourceLabel.mock.rawValue
+            }
         }
         isProcessing = false
         navigateToResults = true
@@ -172,5 +185,9 @@ struct HealthScanView: View {
 
 #Preview {
     let s = AppState(); s.loadDemo()
-    return NavigationStack { HealthScanView().environment(s) }
+    return NavigationStack {
+        HealthScanView()
+            .environment(s)
+            .environment(AppEnvironment.previewMock())
+    }
 }
