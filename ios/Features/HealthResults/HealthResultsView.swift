@@ -3,7 +3,6 @@ import SwiftUI
 struct HealthResultsView: View {
     @Environment(AppState.self) var appState
     @State private var appeared = false
-    @State private var navigateToInsights = false
 
     var body: some View {
         ZStack {
@@ -34,9 +33,6 @@ struct HealthResultsView: View {
         .navigationTitle("Results")
         .navigationBarTitleDisplayMode(.large)
         .toolbarColorScheme(.dark, for: .navigationBar)
-        .navigationDestination(isPresented: $navigateToInsights) {
-            InsightsView()
-        }
         .onAppear {
             withAnimation(.easeOut(duration: 0.5)) { appeared = true }
         }
@@ -99,14 +95,12 @@ struct HealthResultsView: View {
     // MARK: - CTA
     private func ctaButton(_ report: HealthReport) -> some View {
         GradientButton(
-            "View Health × Finance Insights",
+            "Go to Insights ✦",
             icon: "sparkles",
             gradient: SpendyTheme.accentGradient
         ) {
-            if appState.insightResult == nil {
-                appState.insightResult = .demo
-            }
-            navigateToInsights = true
+            // Switch to Insights tab (index 4) – no inline push
+            appState.navigateTo(tab: 4)
         }
     }
 

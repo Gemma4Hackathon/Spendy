@@ -3,6 +3,13 @@ import SwiftUI
 struct ProfileView: View {
     @Environment(AppState.self) var appState
     @State private var appeared = false
+    @State private var showEdit = false
+    @State private var apiKeyInput: String = ""
+    @State private var apiKeyStatus: APIKeyStatus = .idle
+
+    enum APIKeyStatus {
+        case idle, validating, valid, invalid(String)
+    }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -12,6 +19,7 @@ struct ProfileView: View {
                 goalsSection
                 demoSection
                 lifestyleSection
+                apiKeySection
             }
             .padding(.top, 8)
             .padding(.bottom, 40)
@@ -20,8 +28,20 @@ struct ProfileView: View {
         .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.large)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    showEdit = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .foregroundStyle(SpendyTheme.accent)
+                }
+            }
+        }
+        .sheet(isPresented: $showEdit) { EditProfileView().environment(appState) }
         .onAppear {
             withAnimation(.easeOut(duration: 0.45)) { appeared = true }
+            apiKeyInput = APIConfig.geminiAPIKey
         }
     }
 
@@ -183,6 +203,80 @@ struct ProfileView: View {
         .padding(.horizontal, SpendyTheme.padding)
         .opacity(appeared ? 1 : 0)
         .animation(.easeOut(duration: 0.4).delay(0.2), value: appeared)
+    }
+
+    // MARK: - API Key
+    private var apiKeySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader("AI API Key", subtitle: "Gemma 3 via Google AI Studio")
+            HStack(spacing: 10) {
+                SecureField("AIza...", text: $apiKeyInput)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .padding(12)
+                    .background(SpendyTheme.cardElevated)
+                    .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
+                    .onChange(of: apiKeyInput) { apiKeyStatus = .idle }
+
+                Button {
+                    guard !apiKeyInput.isEmpty else { return }
+                    Task { await validateAndSaveKey() }
+                } label: {
+                    if case .validating = apiKeyStatus {
+                        ProgressView().tint(.white).scaleEffect(0.8)
+                            .frame(width: 52, height: 40)
+                            .background(SpendyTheme.accent)
+                            .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
+                    } else {
+                        Text("Save")
+                            .font(.subheadline).fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 16).padding(.vertical, 12)
+                            .background(SpendyTheme.accent)
+                            .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
+                    }
+                }
+                .disabled(apiKeyInput.isEmpty)
+            }
+
+            // Status row
+            switch apiKeyStatus {
+            case .idle:
+                Text("Get a free key at ai.google.dev → API keys")
+                    .font(.caption).foregroundStyle(SpendyTheme.textMuted)
+            case .validating:
+                HStack(spacing: 6) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("Validating key with Gemma API...")
+                }.font(.caption).foregroundStyle(SpendyTheme.textMuted)
+            case .valid:
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(SpendyTheme.healthOK)
+                    Text("Key valid — Gemma 3 27B ready")
+                }.font(.caption).foregroundStyle(SpendyTheme.healthOK)
+            case .invalid(let msg):
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(SpendyTheme.healthBad)
+                    Text(msg).fixedSize(horizontal: false, vertical: true)
+                }.font(.caption).foregroundStyle(SpendyTheme.healthBad)
+            }
+        }
+        .padding(SpendyTheme.padding)
+        .cardStyle()
+        .padding(.horizontal, SpendyTheme.padding)
+        .opacity(appeared ? 1 : 0)
+        .animation(.easeOut(duration: 0.4).delay(0.24), value: appeared)
+    }
+
+    private func validateAndSaveKey() async {
+        apiKeyStatus = .validating
+        let error = await APIConfig.validateKey(apiKeyInput)
+        if let err = error {
+            apiKeyStatus = .invalid(err)
+        } else {
+            APIConfig.geminiAPIKey = apiKeyInput
+            apiKeyStatus = .valid
+        }
     }
 
     // MARK: - Helpers

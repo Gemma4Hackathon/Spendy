@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - User Profile
-struct UserProfile {
+struct UserProfile: Codable {
     var name: String
     var age: Int
     var gender: String

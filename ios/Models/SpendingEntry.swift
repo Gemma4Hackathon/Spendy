@@ -36,7 +36,7 @@ enum SpendingCategory: String, CaseIterable, Codable, Hashable {
 }
 
 // MARK: - Entry
-struct SpendingEntry: Identifiable {
+struct SpendingEntry: Identifiable, Codable {
     let id: UUID
     var title: String
     var amount: Double
@@ -56,6 +56,11 @@ struct SpendingEntry: Identifiable {
         self.category = category
         self.date     = date
         self.note     = note
+    }
+
+    // MARK: - Month helper
+    func isInMonth(_ referenceDate: Date, calendar: Calendar = .current) -> Bool {
+        calendar.isDate(date, equalTo: referenceDate, toGranularity: .month)
     }
 
     // MARK: Demo Data

@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct SpendyApp: App {
     @State private var appState = AppState()
-    @State private var appEnvironment = AppEnvironment(route: .mock) // 可更動：.mock / .remote / .onDevice
+    @State private var appEnvironment = AppEnvironment(route: .remote) // .mock / .remote / .onDevice
 
     var body: some Scene {
         WindowGroup {

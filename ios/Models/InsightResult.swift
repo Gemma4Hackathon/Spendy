@@ -1,8 +1,8 @@
 import Foundation
 
 // MARK: - Action Item
-struct InsightAction: Identifiable {
-    let id = UUID()
+struct InsightAction: Identifiable, Codable {
+    var id: UUID = UUID()
     var title: String
     var description: String
     var expectedOutcome: String
@@ -11,8 +11,8 @@ struct InsightAction: Identifiable {
 }
 
 // MARK: - Connection (Cause → Health Impact)
-struct InsightConnection: Identifiable {
-    let id = UUID()
+struct InsightConnection: Identifiable, Codable {
+    var id: UUID = UUID()
     var icon: String        // SF Symbol name
     var cause: String
     var causeDetail: String
@@ -24,7 +24,7 @@ struct InsightConnection: Identifiable {
 }
 
 // MARK: - Final Result
-struct InsightResult {
+struct InsightResult: Codable {
     var keyFindings: [InsightConnection]
     var overallRiskScore: Int        // 0–100
     var monthlySpendingAtRisk: Double

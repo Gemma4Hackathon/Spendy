@@ -2,8 +2,11 @@ import SwiftUI
 
 struct InsightsView: View {
     @Environment(AppState.self) var appState
+    @Environment(AppEnvironment.self) var appEnvironment
     @State private var appeared = false
     @State private var gaugeScore: CGFloat = 0
+    @State private var isGenerating = false
+    @State private var errorMessage: String? = nil
 
     var body: some View {
         ZStack {
@@ -14,6 +17,8 @@ struct InsightsView: View {
                         headerSection
                         riskGauge(result)
                         findingsSection(result)
+                        BodyVisualizationCard(profile: appState.profile, result: result)
+                            .padding(.horizontal, SpendyTheme.padding)
                         footerNote
                     }
                     .padding(.horizontal, SpendyTheme.padding)
@@ -27,6 +32,20 @@ struct InsightsView: View {
         .navigationTitle("Insights")
         .navigationBarTitleDisplayMode(.large)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if isGenerating {
+                    ProgressView().tint(SpendyTheme.accent)
+                } else if appState.canGenerateInsights {
+                    Button {
+                        Task { await generateInsights() }
+                    } label: {
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(SpendyTheme.accent)
+                    }
+                }
+            }
+        }
         .onAppear {
             withAnimation(.easeOut(duration: 0.5)) { appeared = true }
             if let score = appState.insightResult?.overallRiskScore {
@@ -138,16 +157,51 @@ struct InsightsView: View {
         .animation(.easeOut(duration: 0.4).delay(0.4), value: appeared)
     }
 
-    // MARK: - Empty
+    // MARK: - Empty / Generate
     private var emptyState: some View {
         VStack(spacing: 20) {
             Image(systemName: "sparkles").font(.system(size: 52)).foregroundStyle(SpendyTheme.textMuted)
             Text("No insights yet").font(.title3).fontWeight(.semibold).foregroundStyle(.white)
-            Text("Complete a health scan or load the demo from Profile.")
-                .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)
-                .multilineTextAlignment(.center)
+            if let err = errorMessage {
+                Text(err)
+                    .font(.caption).foregroundStyle(SpendyTheme.healthBad)
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("Complete a health scan and add spending, then tap ✦ to generate.")
+                    .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)
+                    .multilineTextAlignment(.center)
+            }
+            if appState.canGenerateInsights {
+                GradientButton("Generate Insights", icon: "sparkles", isLoading: isGenerating) {
+                    Task { await generateInsights() }
+                }
+                .padding(.horizontal, 40)
+            }
         }
         .padding(40)
+    }
+
+    // MARK: - AI Action
+    private func generateInsights() async {
+        isGenerating = true
+        errorMessage = nil
+        do {
+            let result = try await appEnvironment.router.insightGenerator.generateInsights(
+                profile: appState.profile,
+                spending: appState.spendingEntries,
+                health: appState.healthReport ?? .demo
+            )
+            appState.insightResult = result
+            appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
+            appState.saveToDisk()
+            withAnimation(.easeOut(duration: 1.2)) {
+                gaugeScore = CGFloat(result.overallRiskScore)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            appEnvironment.markServiceError(error)
+        }
+        isGenerating = false
     }
 
     private func gaugeColor(_ score: Int) -> Color {
@@ -286,5 +340,9 @@ private struct InsightConnectionCard: View {
 
 #Preview {
     let s = AppState(); s.loadDemo()
-    return NavigationStack { InsightsView().environment(s) }
+    return NavigationStack {
+        InsightsView()
+            .environment(s)
+            .environment(AppEnvironment.previewMock())
+    }
 }

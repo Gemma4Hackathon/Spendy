@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - Health Status
-enum HealthStatus: String {
+enum HealthStatus: String, Codable {
     case normal     = "Normal"
     case borderline = "Borderline"
     case warning    = "High"
@@ -10,8 +10,8 @@ enum HealthStatus: String {
 }
 
 // MARK: - Metric
-struct HealthMetric: Identifiable {
-    let id = UUID()
+struct HealthMetric: Identifiable, Codable {
+    var id: UUID = UUID()
     var name: String
     var value: String
     var unit: String
@@ -22,7 +22,7 @@ struct HealthMetric: Identifiable {
 }
 
 // MARK: - Report
-struct HealthReport {
+struct HealthReport: Codable {
     var metrics: [HealthMetric]
     var reportDate: Date
     var labName: String
