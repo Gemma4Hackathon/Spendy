@@ -9,7 +9,7 @@ struct InsightsView: View {
     @State private var errorMessage: String? = nil
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             SpendyTheme.background.ignoresSafeArea()
             if let result = appState.insightResult {
                 ScrollView(showsIndicators: false) {
@@ -28,6 +28,18 @@ struct InsightsView: View {
             } else {
                 emptyState
             }
+
+            if isGenerating && appState.insightResult != nil {
+                generatingOverlay
+                    .padding(.horizontal, SpendyTheme.padding)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            } else if let err = errorMessage, appState.insightResult != nil {
+                errorBanner(err)
+                    .padding(.horizontal, SpendyTheme.padding)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
         .navigationTitle("Insights")
         .navigationBarTitleDisplayMode(.large)
@@ -36,11 +48,12 @@ struct InsightsView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 if isGenerating {
                     ProgressView().tint(SpendyTheme.accent)
-                } else if appState.canGenerateInsights {
+                } else if appState.insightResult != nil && appState.canGenerateInsights {
                     Button {
                         Task { await generateInsights() }
                     } label: {
-                        Image(systemName: "sparkles")
+                        Label("Regenerate", systemImage: "arrow.clockwise")
+                            .font(.subheadline)
                             .foregroundStyle(SpendyTheme.accent)
                     }
                 }
@@ -167,7 +180,7 @@ struct InsightsView: View {
                     .font(.caption).foregroundStyle(SpendyTheme.healthBad)
                     .multilineTextAlignment(.center)
             } else {
-                Text("Complete a health scan and add spending, then tap ✦ to generate.")
+                Text("Complete a health scan and add spending, then tap Generate Insights.")
                     .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)
                     .multilineTextAlignment(.center)
             }
@@ -184,12 +197,23 @@ struct InsightsView: View {
     // MARK: - AI Action
     private func generateInsights() async {
         isGenerating = true
+        appState.isGeneratingInsights = true
         errorMessage = nil
+        defer {
+            isGenerating = false
+            appState.isGeneratingInsights = false
+        }
+
+        guard let healthReport = appState.healthReport else {
+            errorMessage = "Complete a health scan before generating insights."
+            return
+        }
+
         do {
             let result = try await appEnvironment.router.insightGenerator.generateInsights(
                 profile: appState.profile,
                 spending: appState.spendingEntries,
-                health: appState.healthReport ?? .demo
+                health: healthReport
             )
             appState.insightResult = result
             appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
@@ -201,7 +225,42 @@ struct InsightsView: View {
             errorMessage = error.localizedDescription
             appEnvironment.markServiceError(error)
         }
-        isGenerating = false
+    }
+
+    private var generatingOverlay: some View {
+        HStack(spacing: 10) {
+            ProgressView().tint(SpendyTheme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Generating insights")
+                    .font(.subheadline).fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                Text("Running Gemma 4 locally on this iPhone.")
+                    .font(.caption)
+                    .foregroundStyle(SpendyTheme.textMuted)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .cardStyle()
+    }
+
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(SpendyTheme.healthWarn)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .padding(14)
+        .background(SpendyTheme.healthWarn.opacity(0.14))
+        .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: SpendyTheme.cornerRadius)
+                .stroke(SpendyTheme.healthWarn.opacity(0.35), lineWidth: 1)
+        )
     }
 
     private func gaugeColor(_ score: Int) -> Color {

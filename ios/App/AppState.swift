@@ -83,9 +83,13 @@ final class AppState {
         profile         = .demo
         spendingEntries = SpendingEntry.demoEntries
         healthReport    = .demo
-        insightResult   = .demo
+        insightResult   = nil   // Let on-device model generate insights
         isDemoLoaded    = true
-        saveToDisk()
+        // Save everything EXCEPT insight — also explicitly delete any cached insight
+        PersistenceManager.shared.save(profile,         fileName: PKey.profile)
+        PersistenceManager.shared.save(spendingEntries, fileName: PKey.spending)
+        PersistenceManager.shared.save(healthReport!,   fileName: PKey.health)
+        PersistenceManager.shared.delete(fileName: PKey.insight)   // clear stale disk cache
     }
 
     func clearAll() {

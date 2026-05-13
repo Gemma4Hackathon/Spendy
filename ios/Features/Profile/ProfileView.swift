@@ -208,7 +208,7 @@ struct ProfileView: View {
     // MARK: - API Key
     private var apiKeySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader("AI API Key", subtitle: "Gemma 3 via Google AI Studio")
+            SectionHeader("Gemini API Key", subtitle: "Used only for Body Visualization image generation")
             HStack(spacing: 10) {
                 SecureField("AIza...", text: $apiKeyInput)
                     .font(.subheadline)
@@ -242,8 +242,12 @@ struct ProfileView: View {
             // Status row
             switch apiKeyStatus {
             case .idle:
-                Text("Get a free key at ai.google.dev → API keys")
-                    .font(.caption).foregroundStyle(SpendyTheme.textMuted)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("All AI analysis runs on-device via Gemma 4.")
+                        .font(.caption).foregroundStyle(SpendyTheme.healthOK)
+                    Text("API key is only needed for Body Visualization (image generation). Get one at ai.google.dev")
+                        .font(.caption).foregroundStyle(SpendyTheme.textMuted)
+                }
             case .validating:
                 HStack(spacing: 6) {
                     ProgressView().scaleEffect(0.7)
@@ -252,7 +256,7 @@ struct ProfileView: View {
             case .valid:
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(SpendyTheme.healthOK)
-                    Text("Key valid — Gemma 3 27B ready")
+                    Text("Key valid - image generation ready")
                 }.font(.caption).foregroundStyle(SpendyTheme.healthOK)
             case .invalid(let msg):
                 HStack(alignment: .top, spacing: 6) {

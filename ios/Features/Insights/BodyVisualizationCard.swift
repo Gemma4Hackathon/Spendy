@@ -2,11 +2,13 @@ import SwiftUI
 
 // MARK: - Body Visualization Card
 // Generates a before/after body silhouette infographic using Gemini image generation.
+// NOTE: Image generation always uses Gemini API (no open-source on-device image gen supported).
 // Only non-sensitive data (BMI, age, gender, goals) is sent — NO real name or blood values.
 struct BodyVisualizationCard: View {
     let profile: UserProfile
     let result: InsightResult
 
+    @Environment(AppEnvironment.self) private var appEnv
     @State private var state: CardState = .idle
     @State private var beforeImageData: Data? = nil
     @State private var afterImageData: Data? = nil
@@ -35,7 +37,9 @@ struct BodyVisualizationCard: View {
                         .font(.caption).foregroundStyle(SpendyTheme.textMuted)
                 }
                 Spacer()
-                StatusBadge(label: "Gemini", color: SpendyTheme.finance)
+                // Image gen always uses Gemini API regardless of inference route
+                StatusBadge(label: appEnv.route == .onDevice ? "Gemini (img)" : "Gemini",
+                            color: SpendyTheme.finance)
             }
 
             switch state {

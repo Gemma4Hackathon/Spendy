@@ -6,8 +6,30 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		C809B49A2FB20C1800764AC7 /* cactus-ios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C809B4992FB20C1800764AC7 /* cactus-ios.xcframework */; };
+		C809B49B2FB20C1800764AC7 /* cactus-ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C809B4992FB20C1800764AC7 /* cactus-ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		C80E2B012FB7000000E2B001 /* gemma-4-e2b-it in Resources */ = {isa = PBXBuildFile; fileRef = C80E2B002FB7000000E2B001 /* gemma-4-e2b-it */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		C809B49C2FB20C1800764AC7 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				C809B49B2FB20C1800764AC7 /* cactus-ios.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		C809B4692FB1632700764AC7 /* Spendy.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = Spendy.xcodeproj; sourceTree = "<group>"; };
+		C809B4992FB20C1800764AC7 /* cactus-ios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "cactus-ios.xcframework"; path = "../../cactus/apple/cactus-ios.xcframework"; sourceTree = "<group>"; };
+		C80E2B002FB7000000E2B001 /* gemma-4-e2b-it */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "gemma-4-e2b-it"; path = "../../cactus/weights/gemma-4-e2b-it"; sourceTree = "<group>"; };
 		C823EB8F2FA364150058CEC2 /* Spendy.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = Spendy.xcodeproj; sourceTree = "<group>"; };
 		C873613F2FA3579E009D1388 /* Spendy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Spendy.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -25,6 +47,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C809B49A2FB20C1800764AC7 /* cactus-ios.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -36,6 +59,22 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		C809B4982FB20C1700764AC7 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				C809B4992FB20C1800764AC7 /* cactus-ios.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		C80E2B022FB7000000E2B001 /* Model Resources */ = {
+			isa = PBXGroup;
+			children = (
+				C80E2B002FB7000000E2B001 /* gemma-4-e2b-it */,
+			);
+			name = "Model Resources";
+			sourceTree = "<group>";
+		};
 		C823EB902FA364150058CEC2 /* Products */ = {
 			isa = PBXGroup;
 			name = Products;
@@ -45,6 +84,8 @@
 			isa = PBXGroup;
 			children = (
 				C87361412FA3579E009D1388 /* Spendy */,
+				C809B4982FB20C1700764AC7 /* Frameworks */,
+				C80E2B022FB7000000E2B001 /* Model Resources */,
 				C87361402FA3579E009D1388 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -67,6 +108,7 @@
 				C873613B2FA3579E009D1388 /* Sources */,
 				C873613C2FA3579E009D1388 /* Frameworks */,
 				C873613D2FA3579E009D1388 /* Resources */,
+				C809B49C2FB20C1800764AC7 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -131,6 +173,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C80E2B012FB7000000E2B001 /* gemma-4-e2b-it in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
