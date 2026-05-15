@@ -80,16 +80,18 @@ final class AppState {
 
     // MARK: - Actions
     func loadDemo() {
+        loadFinanceDemo()
+    }
+
+    func loadFinanceDemo() {
         profile         = .demo
         spendingEntries = SpendingEntry.demoEntries
-        healthReport    = .demo
-        insightResult   = nil   // Let on-device model generate insights
+        healthReport    = nil
+        clearInsight()
         isDemoLoaded    = true
-        // Save everything EXCEPT insight — also explicitly delete any cached insight
         PersistenceManager.shared.save(profile,         fileName: PKey.profile)
         PersistenceManager.shared.save(spendingEntries, fileName: PKey.spending)
-        PersistenceManager.shared.save(healthReport!,   fileName: PKey.health)
-        PersistenceManager.shared.delete(fileName: PKey.insight)   // clear stale disk cache
+        PersistenceManager.shared.delete(fileName: PKey.health)
     }
 
     func clearAll() {
@@ -107,7 +109,23 @@ final class AppState {
 
     func addSpending(_ entry: SpendingEntry) {
         spendingEntries.insert(entry, at: 0)
+        clearInsight()
         PersistenceManager.shared.save(spendingEntries, fileName: PKey.spending)
+    }
+
+    func setHealthReport(_ report: HealthReport?) {
+        healthReport = report
+        clearInsight()
+        if let report {
+            PersistenceManager.shared.save(report, fileName: PKey.health)
+        } else {
+            PersistenceManager.shared.delete(fileName: PKey.health)
+        }
+    }
+
+    func clearInsight() {
+        insightResult = nil
+        PersistenceManager.shared.delete(fileName: PKey.insight)
     }
 
     func navigateTo(tab: Int) {
@@ -121,9 +139,7 @@ final class AppState {
         if let health = healthReport {
             PersistenceManager.shared.save(health, fileName: PKey.health)
         }
-        if let insight = insightResult {
-            PersistenceManager.shared.save(insight, fileName: PKey.insight)
-        }
+        PersistenceManager.shared.delete(fileName: PKey.insight)
     }
 
     // MARK: - Load from disk
@@ -138,8 +154,7 @@ final class AppState {
         if let h: HealthReport = PersistenceManager.shared.load(fileName: PKey.health) {
             healthReport = h
         }
-        if let i: InsightResult = PersistenceManager.shared.load(fileName: PKey.insight) {
-            insightResult = i
-        }
+        PersistenceManager.shared.delete(fileName: PKey.insight)
+        insightResult = nil
     }
 }

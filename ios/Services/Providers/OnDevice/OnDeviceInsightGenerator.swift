@@ -26,24 +26,44 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         spending: [SpendingEntry],
         health: HealthReport
     ) async throws -> InsightResult {
-        // System: force JSON-only mode
-        let systemPrompt = """
-        You are a JSON generator. You MUST output ONLY a valid JSON object. \
-        Begin your response immediately with { and end with }. \
-        No explanation, no markdown, no text before or after the JSON. \
-        ABSOLUTELY NO emojis of any kind.
-        """
-
         let userMessage = buildUserMessage(profile: profile, spending: spending, health: health)
 
-        let rawText = try await CactusManager.shared.complete(
-            systemPrompt: systemPrompt,
+        do {
+            let rawText = try await requestInsightJSON(userMessage: userMessage, isRetry: false)
+            return try parseInsightResult(from: rawText, spending: spending)
+        } catch {
+            print("[InsightGenerator] First attempt failed: \(error.localizedDescription). Retrying with stricter schema.")
+            let retryMessage = buildRetryUserMessage(from: userMessage)
+            let rawText = try await requestInsightJSON(userMessage: retryMessage, isRetry: true)
+            return try parseInsightResult(from: rawText, spending: spending)
+        }
+    }
+
+    private func requestInsightJSON(userMessage: String, isRetry: Bool) async throws -> String {
+        try await CactusManager.shared.complete(
+            systemPrompt: insightSystemPrompt(isRetry: isRetry),
             userMessage: userMessage,
             maxTokens: 1400,
-            temperature: 0.3   // Lower = more deterministic JSON structure
+            temperature: isRetry ? 0.05 : 0.1
         )
+    }
 
-        return try parseInsightResult(from: rawText, spending: spending)
+    private func insightSystemPrompt(isRetry: Bool) -> String {
+        let retryInstruction = isRetry
+            ? "The previous answer used the wrong schema. Correct it now and output only the required JSON object."
+            : "Output only the required JSON object."
+
+        return """
+        You are an on-device health-and-spending insight engine.
+        \(retryInstruction)
+        The response MUST begin with { and end with }.
+        Required top-level keys exactly: riskScore, monthlyAtRisk, findings.
+        The findings array MUST contain 2 objects.
+        Do not output query_details, example_data, schema descriptions, markdown, comments, or text outside JSON.
+        Do not use placeholders such as REPLACE.
+        Do not use emojis.
+        Use only the supplied Spending and Health values.
+        """
     }
 
     // MARK: - Prompt Builder
@@ -63,13 +83,11 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             "\($0.name) \($0.value)\($0.unit) (normal \($0.normalRange), status \($0.status.rawValue))"
         }.joined(separator: "; ")
 
-        // Calculate a suggested riskScore and monthlyAtRisk for model guidance
         let totalSpend = spending.reduce(0) { $0 + $1.amount }
         let atRiskEstimate = Int(totalSpend * 0.45)
         let abnormalCount = health.metrics.filter { $0.status != .normal }.count
         let suggestedRisk = min(95, 40 + abnormalCount * 12)
 
-        // Top 2 spending categories for finding anchors
         let topCats = SpendingCategory.allCases.compactMap { cat -> (String, Int)? in
             let total = spending.filter { $0.category == cat }.reduce(0) { $0 + $1.amount }
             guard total > 0 else { return nil }
@@ -81,13 +99,37 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         let health1 = health.metrics.first.map { "\($0.name): \($0.value)\($0.unit)" } ?? "Blood Sugar: 110 mg/dL"
         let health2 = health.metrics.dropFirst().first.map { "\($0.name): \($0.value)\($0.unit)" } ?? "Blood Pressure: 130/85"
 
-        return """
-        User \(profile.age)yo \(profile.gender) BMI \(String(format: "%.1f", profile.bmi)).
-        Spending: \(spendingLines).
-        Health: \(healthLines).
+        print("[InsightGenerator] Prompt data: spending=\(spendingLines.isEmpty ? "none" : spendingLines); health=\(healthLines.isEmpty ? "none" : healthLines)")
 
-        Complete this JSON with real values from the data above. Output ONLY the JSON:
+        return """
+        TASK:
+        Generate health-and-spending risk insights using the data below.
+
+        DATA:
+        User: \(profile.age)yo \(profile.gender), BMI \(String(format: "%.1f", profile.bmi)).
+        Spending categories: \(spendingLines).
+        Health metrics: \(healthLines).
+
+        REQUIRED OUTPUT:
+        Return one JSON object matching this schema exactly:
         {"riskScore":\(suggestedRisk),"monthlyAtRisk":\(atRiskEstimate),"findings":[{"icon":"fork.knife","cause":"\(cat1) spending pattern","causeDetail":"REPLACE with 1 sentence about \(cat1) and health risk","healthImpact":"REPLACE with metric name","healthDetail":"REPLACE using \(health1)","risk":"REPLACE with 1 sentence consequence","accentColor":"amber","actions":[{"title":"REPLACE with short action","description":"REPLACE why","expectedOutcome":"REPLACE result","timeframe":"REPLACE time","difficulty":2}]},{"icon":"moon.fill","cause":"\(cat2) spending pattern","causeDetail":"REPLACE with 1 sentence about \(cat2) and health risk","healthImpact":"REPLACE with metric name","healthDetail":"REPLACE using \(health2)","risk":"REPLACE with 1 sentence consequence","accentColor":"red","actions":[{"title":"REPLACE with short action","description":"REPLACE why","expectedOutcome":"REPLACE result","timeframe":"REPLACE time","difficulty":2}]}]}
+
+        RULES:
+        Replace every REPLACE value with a concrete sentence based on DATA.
+        Do not create generic example data.
+        Do not include query_details or example_data.
+        """
+    }
+
+    private func buildRetryUserMessage(from userMessage: String) -> String {
+        """
+        \(userMessage)
+
+        RETRY CONSTRAINTS:
+        Your previous response was invalid because it did not contain top-level riskScore, monthlyAtRisk, and findings.
+        Output only the required JSON object now.
+        The first character must be {.
+        The top-level object must contain a non-empty findings array with exactly 2 findings.
         """
     }
 
@@ -106,9 +148,9 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             throw CactusError.inferenceFailure("Insight response was not valid JSON. Please regenerate.")
         }
 
-        let riskScore      = dict["riskScore"]      as? Int    ?? 65
-        let monthlyAtRisk  = dict["monthlyAtRisk"]  as? Double
-                             ?? Double(spending.reduce(0) { $0 + $1.amount } / 2)
+        let riskScore = parseInt(dict["riskScore"]) ?? 65
+        let monthlyAtRisk = parseDouble(dict["monthlyAtRisk"])
+            ?? Double(spending.reduce(0) { $0 + $1.amount } / 2)
         let findingsArray  = dict["findings"]       as? [[String: Any]] ?? []
 
         let findings: [InsightConnection] = findingsArray.compactMap { f in
@@ -157,6 +199,8 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             throw CactusError.inferenceFailure("Insight response did not contain valid findings. Please regenerate.")
         }
 
+        print("[InsightGenerator] Parsed \(findings.count) findings, riskScore=\(riskScore), monthlyAtRisk=\(Int(monthlyAtRisk))")
+
         return InsightResult(
             keyFindings:          findings,
             overallRiskScore:     riskScore,
@@ -177,5 +221,19 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             return String(stripped[start...end])
         }
         return stripped
+    }
+
+    private func parseInt(_ value: Any?) -> Int? {
+        if let intValue = value as? Int { return intValue }
+        if let doubleValue = value as? Double { return Int(doubleValue) }
+        if let stringValue = value as? String { return Int(stringValue) }
+        return nil
+    }
+
+    private func parseDouble(_ value: Any?) -> Double? {
+        if let doubleValue = value as? Double { return doubleValue }
+        if let intValue = value as? Int { return Double(intValue) }
+        if let stringValue = value as? String { return Double(stringValue) }
+        return nil
     }
 }

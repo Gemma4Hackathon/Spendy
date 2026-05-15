@@ -50,7 +50,7 @@ struct SectionHeader: View {
 struct GradientButton: View {
     let title: String
     let icon: String?
-    let gradient: LinearGradient   // kept for API compatibility; visually flat
+    let gradient: LinearGradient
     let isLoading: Bool
     let action: () -> Void
 
@@ -79,7 +79,7 @@ struct GradientButton: View {
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
             .frame(height: 52)
-            .background(SpendyTheme.accent)
+            .background(gradient)
             .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadius))
         }
         .disabled(isLoading)
@@ -155,6 +155,73 @@ struct InfoRow: View {
                 .foregroundStyle(color)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+// MARK: - Progress Step
+struct ProgressStepRow: View {
+    let index: Int
+    let title: String
+    let detail: String
+    let state: StepState
+
+    enum StepState {
+        case pending
+        case active
+        case complete
+        case failed
+
+        var color: Color {
+            switch self {
+            case .pending: return SpendyTheme.textMuted
+            case .active: return SpendyTheme.accent
+            case .complete: return SpendyTheme.healthOK
+            case .failed: return SpendyTheme.healthBad
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .pending: return "\(indexPlaceholder)"
+            case .active: return "ellipsis"
+            case .complete: return "checkmark"
+            case .failed: return "xmark"
+            }
+        }
+
+        private var indexPlaceholder: String { "circle" }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(state.color.opacity(state == .pending ? 0.10 : 0.18))
+                if state == .pending {
+                    Text("\(index)")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundStyle(state.color)
+                } else {
+                    Image(systemName: state.icon)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(state.color)
+                }
+            }
+            .frame(width: 28, height: 28)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(SpendyTheme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
         }
     }
 }

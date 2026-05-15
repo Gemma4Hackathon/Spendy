@@ -26,6 +26,7 @@ struct HealthReport: Codable {
     var metrics: [HealthMetric]
     var reportDate: Date
     var labName: String
+    var evidenceTrace: [String]? = nil
 
     var abnormalCount: Int { metrics.filter { $0.status != .normal }.count }
     var warningCount:  Int { metrics.filter { $0.status == .warning }.count }
@@ -43,6 +44,12 @@ struct HealthReport: Codable {
             HealthMetric(name: "Total Cholesterol", value: "215",  unit: "mg/dL",  normalRange: "< 200",     status: .borderline, icon: "circle.hexagongrid.fill",     progress: 0.72),
         ],
         reportDate: Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date(),
-        labName: "NTU Hospital Health Center"
+        labName: "NTU Hospital Health Center",
+        evidenceTrace: [
+            "Blood Pressure 138/89 mmHg is above the < 120/80 reference range, so it is flagged High.",
+            "Fasting Glucose 112 mg/dL and HbA1c 6.1% are above their reference ranges, so glucose control needs attention.",
+            "LDL 145 mg/dL, Triglycerides 198 mg/dL, Total Cholesterol 215 mg/dL, and BMI 25.8 are outside optimal ranges, so they are flagged Borderline.",
+            "HDL Cholesterol 52 mg/dL is above the > 40 reference range, so it is flagged Normal."
+        ]
     )
 }

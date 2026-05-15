@@ -5,10 +5,7 @@ struct FinanceAssistantView: View {
     @Environment(AppEnvironment.self) var appEnvironment
     @State private var summary: FinanceSummary? = nil
     @State private var isLoading = false
-    @State private var displayedText = ""
-    @State private var isTypingDone = false
     @State private var appeared = false
-    @State private var typewriterRunID = UUID()
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -17,6 +14,7 @@ struct FinanceAssistantView: View {
                     summaryHeader
                     if let summary {
                         riskChips(summary)
+                        spendingChart(summary)
                         aiMessageCard(summary)
                     } else if isLoading {
                         loadingCard
@@ -47,14 +45,14 @@ struct FinanceAssistantView: View {
         .onAppear {
             withAnimation(.easeOut(duration: 0.45)) { appeared = true }
             // Only load if model is already ready; otherwise onChange below handles it
-            if summary == nil && appState.hasSpendingData &&
+            if summary == nil && !isLoading && appState.hasSpendingData &&
                appEnvironment.onDeviceInstallState == .ready {
                 Task { await loadSummary() }
             }
         }
         .onChange(of: appEnvironment.onDeviceInstallState) { _, newState in
             // Auto-load when model finishes initializing
-            if newState == .ready && summary == nil && appState.hasSpendingData {
+            if newState == .ready && summary == nil && !isLoading && appState.hasSpendingData {
                 Task { await loadSummary() }
             }
         }
@@ -107,23 +105,23 @@ struct FinanceAssistantView: View {
     // MARK: - Risk Chips
     private func riskChips(_ s: FinanceSummary) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader("High-Risk Categories")
+            SectionHeader("Budget Levers", subtitle: "Categories with the most room to adjust")
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(s.riskCategories, id: \.self) { cat in
                         HStack(spacing: 6) {
                             Image(systemName: cat.icon)
-                                .font(.system(size: 13))
-                                .foregroundStyle(SpendyTheme.healthWarn)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(SpendyTheme.finance)
                             Text(cat.rawValue).font(.subheadline).foregroundStyle(.white)
                             Text("NT$\(Int(s.categoryBreakdown[cat] ?? 0))")
-                                .font(.caption).foregroundStyle(SpendyTheme.healthWarn)
+                                .font(.caption).foregroundStyle(SpendyTheme.finance)
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .background(SpendyTheme.healthWarn.opacity(0.08))
+                        .background(SpendyTheme.finance.opacity(0.08))
                         .clipShape(Capsule())
-                        .overlay(Capsule().stroke(SpendyTheme.healthWarn.opacity(0.25), lineWidth: 1))
+                        .overlay(Capsule().stroke(SpendyTheme.finance.opacity(0.25), lineWidth: 1))
                     }
                 }
             }
@@ -159,9 +157,8 @@ struct FinanceAssistantView: View {
             }
 
             if !s.insightItems.isEmpty {
-                structuredInsight(s)
-            } else if isTypingDone {
-                // Fully rendered markdown
+                structuredAdvice(s)
+            } else {
                 MarkdownContentView(
                     text: s.aiMessage,
                     bodyFont: .subheadline,
@@ -169,21 +166,53 @@ struct FinanceAssistantView: View {
                     accentColor: .white
                 )
                 .transition(.opacity)
-            } else {
-                // Typewriter plain text during animation
-                Text(displayedText)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineSpacing(5)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(SpendyTheme.padding)
         .cardStyle()
-        .animation(.easeIn(duration: 0.4), value: isTypingDone)
+        .animation(.easeIn(duration: 0.4), value: summary?.aiMessage)
     }
 
-    private func structuredInsight(_ s: FinanceSummary) -> some View {
+    private func spendingChart(_ s: FinanceSummary) -> some View {
+        let rows = s.categoryBreakdown.sorted { $0.value > $1.value }.prefix(5)
+        let maxAmount = rows.map(\.value).max() ?? 1
+
+        return VStack(alignment: .leading, spacing: 12) {
+            SectionHeader("Spending Map", subtitle: "Where this month is concentrated")
+
+            ForEach(Array(rows), id: \.key) { category, amount in
+                let share = s.totalSpent > 0 ? Int((amount / s.totalSpent) * 100) : 0
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Label(category.rawValue, systemImage: category.icon)
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white.opacity(0.9))
+                        Spacer()
+                        Text("NT$\(Int(amount)) · \(share)%")
+                            .font(.caption)
+                            .foregroundStyle(SpendyTheme.textMuted)
+                    }
+
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.white.opacity(0.07))
+                            Capsule()
+                                .fill(Color(hex: category.colorHex))
+                                .frame(width: max(10, proxy.size.width * CGFloat(amount / maxAmount)))
+                        }
+                    }
+                    .frame(height: 8)
+                }
+            }
+        }
+        .padding(SpendyTheme.padding)
+        .cardStyle()
+        .opacity(appeared ? 1 : 0)
+        .animation(.easeOut(duration: 0.4).delay(0.10), value: appeared)
+    }
+
+    private func structuredAdvice(_ s: FinanceSummary) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(s.shortTitle)
@@ -196,56 +225,60 @@ struct FinanceAssistantView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            ForEach(s.insightItems) { item in
-                HStack(alignment: .top, spacing: 12) {
-                    ZStack {
-                        SpendyTheme.finance.opacity(0.16)
-                        Image(systemName: item.icon)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(SpendyTheme.finance)
-                    }
-                    .frame(width: 34, height: 34)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(item.title)
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.white)
-                            Spacer()
-                            Text(item.amount)
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(SpendyTheme.healthWarn)
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(s.insightItems) { item in
+                    HStack(alignment: .top, spacing: 12) {
+                        ZStack {
+                            SpendyTheme.finance.opacity(0.14)
+                            Image(systemName: item.icon)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(SpendyTheme.finance)
                         }
-                        Text(item.impact)
-                            .font(.caption)
-                            .foregroundStyle(SpendyTheme.textMuted)
-                            .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: 34, height: 34)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(item.title)
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.white)
+                                Spacer()
+                                Text(item.amount)
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(SpendyTheme.finance)
+                            }
+                            Text(item.impact)
+                                .font(.caption)
+                                .foregroundStyle(SpendyTheme.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
+                    .padding(12)
+                    .insetSurface()
                 }
-                .padding(12)
-                .background(Color.white.opacity(0.04))
-                .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
             }
 
-            if !s.primaryAction.isEmpty {
-                HStack(alignment: .top, spacing: 9) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 15))
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(SpendyTheme.healthOK)
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Next 7 days")
+                        .font(.caption)
+                        .fontWeight(.semibold)
                         .foregroundStyle(SpendyTheme.healthOK)
-                        .padding(.top, 1)
                     Text(s.primaryAction)
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.88))
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(SpendyTheme.healthOK.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
             }
+            .padding(12)
+            .background(SpendyTheme.healthOK.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
         }
     }
 
@@ -278,48 +311,13 @@ struct FinanceAssistantView: View {
 
     // MARK: - Actions
     private func loadSummary() async {
+        guard !isLoading else { return }
+        guard appState.hasSpendingData else { return }
         isLoading = true
-        displayedText = ""
-        isTypingDone = false
-        typewriterRunID = UUID()
+        defer { isLoading = false }
         let result = await appEnvironment.router.financeProvider.fetchFinanceSummary(entries: appState.spendingEntries)
         summary = result
         appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
-        isLoading = false
-        if result.insightItems.isEmpty {
-            startTypewriter(text: result.aiMessage)
-        } else {
-            displayedText = ""
-            isTypingDone = true
-        }
-    }
-
-    private func startTypewriter(text: String) {
-        let runID = UUID()
-        typewriterRunID = runID
-        displayedText = ""
-        isTypingDone = false
-        var delay = 0.0
-        let chars = Array(text)
-        if chars.isEmpty {
-            isTypingDone = true
-            return
-        }
-        for (i, char) in chars.enumerated() {
-            let c = char
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard typewriterRunID == runID else { return }
-                displayedText.append(c)
-                // Flip to markdown render after last character
-                if i == chars.count - 1 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        guard typewriterRunID == runID else { return }
-                        withAnimation { isTypingDone = true }
-                    }
-                }
-            }
-            delay += 0.010
-        }
     }
 }
 

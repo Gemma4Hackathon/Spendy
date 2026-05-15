@@ -3,15 +3,18 @@ import SwiftUI
 // MARK: - Design System
 enum SpendyTheme {
 
-    // MARK: Colors – neutral gray palette (Linear / Notion aesthetic)
+    // MARK: Surfaces
     static let background   = Color(hex: "0F0F0F")   // near-black neutral
     static let card         = Color(hex: "191919")   // card surface
     static let cardElevated = Color(hex: "232323")   // elevated surface
+    static let cardInset    = Color(hex: "121212")   // inset surface
     static let border       = Color.white.opacity(0.06)
+    static let borderStrong = Color.white.opacity(0.12)
 
-    // Single accent – clean blue, no purple
+    // MARK: Product Colors
     static let accent       = Color(hex: "4F80FF")
-    static let accentEnd    = Color(hex: "4F80FF")   // flat, same color
+    static let accentEnd    = Color(hex: "6AA6FF")
+    static let ai           = Color(hex: "8B5CF6")
 
     static let healthOK     = Color(hex: "22C55E")   // green-500
     static let healthWarn   = Color(hex: "EAB308")   // yellow-500
@@ -21,21 +24,21 @@ enum SpendyTheme {
     static let textPrimary  = Color.white
     static let textMuted    = Color(hex: "71717A")   // zinc-500, neutral gray
 
-    // MARK: "Gradients" – all flat (single color, no actual gradient)
+    // MARK: Gradients
     static var accentGradient: LinearGradient {
-        LinearGradient(colors: [accent, accent],
+        LinearGradient(colors: [accent, accentEnd],
                        startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     static var financeGradient: LinearGradient {
-        LinearGradient(colors: [finance, finance],
+        LinearGradient(colors: [finance, accent],
                        startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     static var healthGradient: LinearGradient {
-        LinearGradient(colors: [healthOK, healthOK],
+        LinearGradient(colors: [healthOK, Color(hex: "14B8A6")],
                        startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     static var warnGradient: LinearGradient {
-        LinearGradient(colors: [healthWarn, healthWarn],
+        LinearGradient(colors: [healthWarn, Color(hex: "F97316")],
                        startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
@@ -45,6 +48,11 @@ enum SpendyTheme {
     static let padding: CGFloat        = 20
     static let paddingSm: CGFloat      = 14
     static let spacing: CGFloat        = 20
+
+    // MARK: Motion
+    static let motionFast: Double      = 0.22
+    static let motionNormal: Double    = 0.38
+    static let motionSlow: Double      = 0.70
 }
 
 // MARK: - Color Hex Extension
@@ -76,6 +84,16 @@ extension View {
             .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: SpendyTheme.cornerRadius)
+                    .stroke(SpendyTheme.border, lineWidth: 1)
+            )
+    }
+
+    func insetSurface() -> some View {
+        self
+            .background(SpendyTheme.cardInset)
+            .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
+            .overlay(
+                RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm)
                     .stroke(SpendyTheme.border, lineWidth: 1)
             )
     }

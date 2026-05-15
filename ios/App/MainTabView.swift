@@ -8,11 +8,11 @@ struct MainTabView: View {
 
         TabView(selection: $state.selectedTab) {
 
-            // Tab 0 – Profile
+            // Tab 0 – Today
             NavigationStack {
-                ProfileView()
+                TodayView()
             }
-            .tabItem { Label("Profile", systemImage: "person.crop.circle.fill") }
+            .tabItem { Label("Today", systemImage: "house.fill") }
             .tag(0)
 
             // Tab 1 – Spending
@@ -29,7 +29,7 @@ struct MainTabView: View {
             .tabItem { Label("Fin Assistant", systemImage: "chart.bar.xaxis.ascending.badge.clock") }
             .tag(2)
 
-            // Tab 3 – Health Scan → Results (navigation within tab)
+            // Tab 3 – Health Scan
             NavigationStack {
                 HealthScanView()
             }
@@ -42,6 +42,7 @@ struct MainTabView: View {
             }
             .tabItem { Label("Insights", systemImage: "sparkles") }
             .tag(4)
+
         }
         .tint(SpendyTheme.accent)
         .preferredColorScheme(.dark)

@@ -9,7 +9,7 @@
 /* Begin PBXBuildFile section */
 		C809B49A2FB20C1800764AC7 /* cactus-ios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C809B4992FB20C1800764AC7 /* cactus-ios.xcframework */; };
 		C809B49B2FB20C1800764AC7 /* cactus-ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C809B4992FB20C1800764AC7 /* cactus-ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		C80E2B012FB7000000E2B001 /* gemma-4-e2b-it in Resources */ = {isa = PBXBuildFile; fileRef = C80E2B002FB7000000E2B001 /* gemma-4-e2b-it */; };
+		C80E2B012FB7000000E2B001 /* gemma-4-e2b-m23k-cot-sft-lora-int4 in Resources */ = {isa = PBXBuildFile; fileRef = C80E2B002FB7000000E2B001 /* gemma-4-e2b-m23k-cot-sft-lora-int4 */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -29,9 +29,10 @@
 /* Begin PBXFileReference section */
 		C809B4692FB1632700764AC7 /* Spendy.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = Spendy.xcodeproj; sourceTree = "<group>"; };
 		C809B4992FB20C1800764AC7 /* cactus-ios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "cactus-ios.xcframework"; path = "../../cactus/apple/cactus-ios.xcframework"; sourceTree = "<group>"; };
-		C80E2B002FB7000000E2B001 /* gemma-4-e2b-it */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "gemma-4-e2b-it"; path = "../../cactus/weights/gemma-4-e2b-it"; sourceTree = "<group>"; };
+		C80E2B002FB7000000E2B001 /* gemma-4-e2b-m23k-cot-sft-lora-int4 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "gemma-4-e2b-m23k-cot-sft-lora-int4"; path = "../../cactus/weights/gemma-4-e2b-m23k-cot-sft-lora-int4"; sourceTree = "<group>"; };
 		C823EB8F2FA364150058CEC2 /* Spendy.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = Spendy.xcodeproj; sourceTree = "<group>"; };
 		C873613F2FA3579E009D1388 /* Spendy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Spendy.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C8C495122FB6176400F219A0 /* Spendy.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = Spendy.xcodeproj; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -70,7 +71,7 @@
 		C80E2B022FB7000000E2B001 /* Model Resources */ = {
 			isa = PBXGroup;
 			children = (
-				C80E2B002FB7000000E2B001 /* gemma-4-e2b-it */,
+				C80E2B002FB7000000E2B001 /* gemma-4-e2b-m23k-cot-sft-lora-int4 */,
 			);
 			name = "Model Resources";
 			sourceTree = "<group>";
@@ -95,6 +96,11 @@
 			children = (
 				C873613F2FA3579E009D1388 /* Spendy.app */,
 			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		C8C495132FB6176400F219A0 /* Products */ = {
+			isa = PBXGroup;
 			name = Products;
 			sourceTree = "<group>";
 		};
@@ -160,6 +166,10 @@
 					ProductGroup = C809B46A2FB1632700764AC7 /* Products */;
 					ProjectRef = C809B4692FB1632700764AC7 /* Spendy.xcodeproj */;
 				},
+				{
+					ProductGroup = C8C495132FB6176400F219A0 /* Products */;
+					ProjectRef = C8C495122FB6176400F219A0 /* Spendy.xcodeproj */;
+				},
 			);
 			projectRoot = "";
 			targets = (
@@ -173,7 +183,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C80E2B012FB7000000E2B001 /* gemma-4-e2b-it in Resources */,
+				C80E2B012FB7000000E2B001 /* gemma-4-e2b-m23k-cot-sft-lora-int4 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
