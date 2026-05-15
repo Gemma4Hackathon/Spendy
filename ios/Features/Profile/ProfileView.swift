@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ProfileView: View {
     @Environment(AppState.self) var appState
+    @Environment(\.dismiss) private var dismiss
     @State private var appeared = false
     @State private var showEdit = false
     @State private var apiKeyInput: String = ""
@@ -29,6 +30,12 @@ struct ProfileView: View {
         .navigationBarTitleDisplayMode(.large)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Done") {
+                    dismiss()
+                }
+                .foregroundStyle(SpendyTheme.accent)
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     showEdit = true
@@ -163,17 +170,17 @@ struct ProfileView: View {
         VStack(spacing: SpendyTheme.paddingSm) {
             if !appState.isDemoLoaded {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Load Demo").font(.subheadline).fontWeight(.semibold).foregroundStyle(.white)
-                    Text("Populate a full health + spending scenario to explore Spendy's cross-domain analysis.")
+                    Text("Load Finance Demo").font(.subheadline).fontWeight(.semibold).foregroundStyle(.white)
+                    Text("Populate sample spending only. Health scan and insights stay empty for real testing.")
                         .font(.caption).foregroundStyle(SpendyTheme.textMuted)
                 }
-                GradientButton("Load Demo", icon: "sparkles") {
-                    withAnimation(.spring(duration: 0.4)) { appState.loadDemo() }
+                GradientButton("Load Finance Demo", icon: "creditcard.fill") {
+                    withAnimation(.spring(duration: 0.4)) { appState.loadFinanceDemo() }
                 }
             } else {
                 HStack {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(SpendyTheme.healthOK)
-                    Text("Demo loaded").font(.subheadline).foregroundStyle(SpendyTheme.healthOK)
+                    Text("Finance demo loaded").font(.subheadline).foregroundStyle(SpendyTheme.healthOK)
                     Spacer()
                     Button("Clear") { withAnimation { appState.clearAll() } }
                         .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)

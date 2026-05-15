@@ -27,10 +27,14 @@ final class CactusManager {
 
     // MARK: - Private
     private var modelHandle: CactusModelT?
+    private let inferenceQueue = DispatchQueue(label: "Spendy.CactusManager.inference")
     // Cactus uses its own weight format (directory with config.txt + tokenizer files + *.weights).
-    private let modelDirName = "gemma-4-e2b-it"
+    private let modelDirCandidates = [
+        "gemma-4-e2b-m23k-cot-sft-lora-int4",
+        "gemma-4-e2b-it"
+    ]
 
-    private var modelDestURL: URL {
+    private func modelDestURL(for modelDirName: String) -> URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docs.appendingPathComponent(modelDirName)
     }
@@ -53,13 +57,13 @@ final class CactusManager {
             let path = try resolveModelPath()
             print("[CactusManager] Model path resolved: \(path)")
 
-            // Run blocking cactusInit on background thread
-            let handle = try await Task.detached(priority: .userInitiated) {
+            // Run blocking cactusInit on the same serial Cactus queue used for inference.
+            let handle: CactusModelT = try await runOnInferenceQueue {
                 print("[CactusManager] cactusInit starting...")
                 let h = try cactusInit(path, nil, false)
                 print("[CactusManager] cactusInit complete.")
                 return h
-            }.value
+            }
 
             modelHandle = handle
             await MainActor.run { self.state = .ready }
@@ -104,9 +108,10 @@ final class CactusManager {
         let messagesJSON = try jsonString(messages)
         let optionsJSON  = try jsonString(options)
 
-        print("[CactusManager] Inference start (maxTokens: \(maxTokens))...")
+        print("[CactusManager] Inference queued (maxTokens: \(maxTokens))...")
 
-        return try await Task.detached(priority: .userInitiated) {
+        return try await runOnInferenceQueue {
+            print("[CactusManager] Inference start (maxTokens: \(maxTokens))...")
             let raw = try cactusComplete(
                 handle,
                 messagesJSON,
@@ -120,7 +125,7 @@ final class CactusManager {
             let text = Self.extractResponse(from: raw)
             print("\n[CactusManager] Inference done (\(text.count) chars)")
             return text
-        }.value
+        }
     }
 
     /// Vision completion — runs on background thread.
@@ -152,14 +157,15 @@ final class CactusManager {
         let messagesJSON = try jsonString(messages)
         let optionsJSON  = try jsonString(options)
 
-        print("[CactusManager] Vision inference start...")
+        print("[CactusManager] Vision inference queued...")
 
-        return try await Task.detached(priority: .userInitiated) {
+        return try await runOnInferenceQueue {
+            print("[CactusManager] Vision inference start...")
             let raw = try cactusComplete(handle, messagesJSON, optionsJSON, nil, nil)
             let text = Self.extractResponse(from: raw)
             print("[CactusManager] Vision inference done (\(text.count) chars)")
             return text
-        }.value
+        }
     }
 
     // MARK: - Private helpers
@@ -182,10 +188,22 @@ final class CactusManager {
         return h
     }
 
+    private func runOnInferenceQueue<T>(_ operation: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            inferenceQueue.async {
+                do {
+                    continuation.resume(returning: try operation())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     private func jsonString(_ object: Any) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: object)
         guard let str = String(data: data, encoding: .utf8) else { throw CactusError.jsonEncoding }
-        return str
+        return str.replacingOccurrences(of: "\\/", with: "/")
     }
 
     private func writeTemporaryJPEG(from imageData: Data) throws -> URL {
@@ -199,21 +217,25 @@ final class CactusManager {
     }
 
     private func resolveModelPath() throws -> String {
-        // 1. App bundle (production) - embedded model directory
-        if let p = Bundle.main.url(forResource: modelDirName, withExtension: nil)?.path,
-           FileManager.default.fileExists(atPath: p + "/config.txt") {
-            return p
-        }
-        // 2. Documents (sideloaded directory)
-        let docsPath = modelDestURL.path
-        if FileManager.default.fileExists(atPath: docsPath + "/config.txt") {
-            return docsPath
-        }
-        // 3. Developer path: cactus convert puts weights here
-        let devPath = "/Users/weichengchen/Gemma4Good/cactus/weights/\(modelDirName)"
-        if FileManager.default.fileExists(atPath: devPath + "/config.txt") {
-            print("[CactusManager] Using dev path: \(devPath)")
-            return devPath
+        for modelDirName in modelDirCandidates {
+            // 1. App bundle (production) - embedded model directory
+            if let p = Bundle.main.url(forResource: modelDirName, withExtension: nil)?.path,
+               FileManager.default.fileExists(atPath: p + "/config.txt") {
+                print("[CactusManager] Using bundled model: \(modelDirName)")
+                return p
+            }
+            // 2. Documents (sideloaded directory)
+            let docsPath = modelDestURL(for: modelDirName).path
+            if FileManager.default.fileExists(atPath: docsPath + "/config.txt") {
+                print("[CactusManager] Using sideloaded model: \(modelDirName)")
+                return docsPath
+            }
+            // 3. Developer path: cactus convert puts weights here
+            let devPath = "/Users/weichengchen/Gemma4Good/cactus/weights/\(modelDirName)"
+            if FileManager.default.fileExists(atPath: devPath + "/config.txt") {
+                print("[CactusManager] Using dev model: \(modelDirName)")
+                return devPath
+            }
         }
         throw CactusError.modelFileNotFound
     }

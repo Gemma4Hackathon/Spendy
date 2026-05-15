@@ -3,6 +3,7 @@ import SwiftUI
 struct HealthResultsView: View {
     @Environment(AppState.self) var appState
     @State private var appeared = false
+    @State private var showEvidenceTrace = false
 
     var body: some View {
         ZStack {
@@ -12,6 +13,7 @@ struct HealthResultsView: View {
                     VStack(spacing: SpendyTheme.spacing) {
                         summaryBanner(report)
                         metricsGrid(report)
+                        evidenceTraceSection(report)
                     }
                     .padding(.horizontal, SpendyTheme.padding)
                     .padding(.top, 8)
@@ -92,10 +94,62 @@ struct HealthResultsView: View {
         }
     }
 
+    private func evidenceTraceSection(_ report: HealthReport) -> some View {
+        let trace = report.evidenceTrace ?? []
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                SectionHeader("Evidence Trace", subtitle: "How the report was interpreted")
+                Spacer()
+                if !trace.isEmpty {
+                    Button(showEvidenceTrace ? "Hide" : "Show") {
+                        withAnimation(.easeOut(duration: SpendyTheme.motionFast)) {
+                            showEvidenceTrace.toggle()
+                        }
+                    }
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(SpendyTheme.accent)
+                }
+            }
+            if trace.isEmpty {
+                Text("No evidence trace was produced for this scan.")
+                    .font(.subheadline)
+                    .foregroundStyle(SpendyTheme.textMuted)
+            } else {
+                let visibleTrace = showEvidenceTrace ? trace : Array(trace.prefix(1))
+                ForEach(Array(visibleTrace.enumerated()), id: \.offset) { index, item in
+                    HStack(alignment: .top, spacing: 10) {
+                        Text("\(index + 1)")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundStyle(.white)
+                            .frame(width: 22, height: 22)
+                            .background(SpendyTheme.accent.opacity(0.85))
+                            .clipShape(Circle())
+                        Text(item)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.86))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if !showEvidenceTrace && trace.count > 1 {
+                    Text("\(trace.count - 1) more evidence notes hidden.")
+                        .font(.caption)
+                        .foregroundStyle(SpendyTheme.textMuted)
+                }
+            }
+        }
+        .padding(SpendyTheme.padding)
+        .cardStyle()
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 16)
+        .animation(.easeOut(duration: 0.35).delay(0.16), value: appeared)
+    }
+
     // MARK: - CTA
     private func ctaButton(_ report: HealthReport) -> some View {
         GradientButton(
-            "Go to Insights ✦",
+            "Go to Insights",
             icon: "sparkles",
             gradient: SpendyTheme.accentGradient
         ) {

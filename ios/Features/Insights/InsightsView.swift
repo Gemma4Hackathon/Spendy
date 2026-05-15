@@ -16,6 +16,7 @@ struct InsightsView: View {
                     VStack(spacing: SpendyTheme.spacing) {
                         headerSection
                         riskGauge(result)
+                        signalPathSection(result)
                         findingsSection(result)
                         BodyVisualizationCard(profile: appState.profile, result: result)
                             .padding(.horizontal, SpendyTheme.padding)
@@ -156,6 +157,38 @@ struct InsightsView: View {
         }
     }
 
+    private func signalPathSection(_ result: InsightResult) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader("Signal Path", subtitle: "How spending connects to health markers")
+
+            ForEach(Array(result.keyFindings.prefix(3).enumerated()), id: \.element.id) { index, finding in
+                HStack(spacing: 10) {
+                    PathNode(
+                        label: finding.cause,
+                        icon: finding.icon,
+                        color: accentColor(for: finding)
+                    )
+                    Image(systemName: "arrow.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(SpendyTheme.textMuted)
+                    PathNode(
+                        label: finding.healthImpact,
+                        icon: "heart.text.clipboard.fill",
+                        color: accentColor(for: finding)
+                    )
+                }
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : 10)
+                .animation(.easeOut(duration: 0.35).delay(Double(index) * 0.06 + 0.12), value: appeared)
+            }
+        }
+        .padding(SpendyTheme.padding)
+        .cardStyle()
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 16)
+        .animation(.easeOut(duration: 0.4).delay(0.10), value: appeared)
+    }
+
     // MARK: - Footer
     private var footerNote: some View {
         HStack(spacing: 8) {
@@ -265,6 +298,42 @@ struct InsightsView: View {
 
     private func gaugeColor(_ score: Int) -> Color {
         score < 40 ? SpendyTheme.healthOK : score < 70 ? SpendyTheme.healthWarn : SpendyTheme.healthBad
+    }
+
+    private func accentColor(for connection: InsightConnection) -> Color {
+        switch connection.accentColor {
+        case "red": return SpendyTheme.healthBad
+        case "amber": return SpendyTheme.healthWarn
+        default: return SpendyTheme.finance
+        }
+    }
+}
+
+private struct PathNode: View {
+    let label: String
+    let icon: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(color)
+            Text(label)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.white.opacity(0.88))
+                .lineLimit(2)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+        .padding(.horizontal, 10)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
+        .overlay(
+            RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm)
+                .stroke(color.opacity(0.20), lineWidth: 1)
+        )
     }
 }
 

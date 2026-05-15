@@ -60,7 +60,10 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         total: Double
     ) async throws -> FinanceInsightPayload {
         let lines = breakdown.sorted { $0.value > $1.value }
-            .map { "- \($0.key.rawValue): NT$\(Int($0.value))" }
+            .map { category, amount in
+                let share = total > 0 ? Int((amount / total) * 100) : 0
+                return "- \(category.rawValue): NT$\(Int(amount)) (\(share)% of tracked spend)"
+            }
             .joined(separator: "\n")
 
         let recent = entries.prefix(5)
@@ -68,10 +71,14 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             .joined(separator: "\n")
 
         let systemPrompt = """
-        You are a JSON generator for a finance health app. \
+        You are a concise budget triage engine for a finance app. \
+        The spending data is already provided in the user message. Never ask for more data. \
         Output ONLY one valid JSON object. No markdown. No explanation. \
         ABSOLUTELY NO emojis of any kind. \
-        Keep every string short and specific.
+        Keep every string short, practical, and based on NT$ amounts. \
+        Write like Copilot Money or YNAB: calm, specific, and action-oriented. \
+        Do not use vague urgency phrases like immediate attention, concerning, alarming, or high risk. \
+        Do not invent health claims.
         """
 
         let userMessage = """
@@ -83,15 +90,17 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         Recent transactions (latest 5):
         \(recent)
 
-        Complete this JSON using real values from the data above:
-        {"shortTitle":"maximum 6 words","quickTake":"one sentence, maximum 22 words","primaryAction":"one concrete action, maximum 16 words","items":[{"icon":"fork.knife","title":"category or behavior","amount":"NT$ amount","impact":"health or budget impact, maximum 14 words"},{"icon":"cup.and.saucer.fill","title":"category or behavior","amount":"NT$ amount","impact":"health or budget impact, maximum 14 words"},{"icon":"moon.fill","title":"category or behavior","amount":"NT$ amount","impact":"health or budget impact, maximum 14 words"}]}
+        Complete this JSON using only real values from the data above:
+        {"shortTitle":"3-5 words, no alarm language","quickTake":"one concrete sentence with NT$ amount and percentage, maximum 20 words","primaryAction":"one measurable 7-day action with NT$ target, maximum 16 words","items":[{"icon":"fork.knife","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"},{"icon":"cup.and.saucer.fill","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"},{"icon":"moon.fill","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"}]}
+
+        If uncertain, still return the JSON using the category totals. Do not say you need more information.
         """
 
         let text = try await CactusManager.shared.complete(
             systemPrompt: systemPrompt,
             userMessage: userMessage,
-            maxTokens: 450,
-            temperature: 0.2
+            maxTokens: 650,
+            temperature: 0.05
         )
         return parseFinanceInsight(from: text, fallback: fallbackInsight(breakdown: breakdown, total: total))
     }
@@ -116,11 +125,20 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         var items: [FinanceInsightItem]
 
         var aiMessage: String {
-            """
+            let rows = items.map { item in
+                "| \(item.title) | \(item.amount) | \(item.impact) |"
+            }.joined(separator: "\n")
+
+            return """
             ## \(shortTitle)
+
             \(quickTake)
 
-            - \(primaryAction)
+            | Budget lever | Current | Next move |
+            | --- | ---: | --- |
+            \(rows)
+
+            **7-day action:** \(primaryAction)
             """
         }
     }
@@ -167,18 +185,24 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         total: Double
     ) -> FinanceInsightPayload {
         let topItems = breakdown.sorted { $0.value > $1.value }.prefix(3).map { category, amount in
-            FinanceInsightItem(
+            let weeklyTarget = max(100, Int(amount * 0.75 / 4))
+            let monthlyTrim = max(100, Int(amount * 0.20))
+            return FinanceInsightItem(
                 icon: category.icon,
                 title: category.rawValue,
                 amount: "NT$\(Int(amount))",
-                impact: "High share of monthly spending"
+                impact: "Trim NT$\(monthlyTrim), cap NT$\(weeklyTarget)/week"
             )
         }
-        let top = topItems.first?.title ?? "Spending"
+        let sorted = breakdown.sorted { $0.value > $1.value }
+        let topCategory = sorted.first?.key.rawValue ?? "Spending"
+        let topAmount = sorted.first?.value ?? total
+        let topShare = total > 0 ? Int((topAmount / total) * 100) : 0
+        let weeklyTarget = max(100, Int(topAmount * 0.75 / 4))
         return FinanceInsightPayload(
-            shortTitle: "Spending risk check",
-            quickTake: "\(top) is the largest spending signal this month.",
-            primaryAction: "Set a weekly cap for the top risk category.",
+            shortTitle: "Spending focus this week",
+            quickTake: "\(topCategory) leads tracked spending at NT$\(Int(topAmount)), about \(topShare)% of this month.",
+            primaryAction: "Keep \(topCategory) under NT$\(weeklyTarget) for the next 7 days.",
             items: topItems.isEmpty ? [
                 FinanceInsightItem(icon: "chart.bar.fill", title: "Monthly spending", amount: "NT$\(Int(total))", impact: "Track before optimizing")
             ] : topItems

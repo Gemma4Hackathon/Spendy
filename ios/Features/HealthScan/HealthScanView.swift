@@ -9,6 +9,16 @@ struct HealthScanView: View {
     @State private var pulseScale: CGFloat = 1.0
     @State private var appeared = false
     @State private var navigateToResults = false
+    @State private var scanStage: ScanStage = .idle
+    @State private var fallbackMessage: String? = nil
+
+    private enum ScanStage {
+        case idle
+        case readingImage
+        case extractingMarkers
+        case preparingResults
+        case failed
+    }
 
     var body: some View {
         ZStack {
@@ -18,6 +28,10 @@ struct HealthScanView: View {
                 scanIcon
                 Spacer().frame(height: 40)
                 actionButtons
+                if isProcessing || fallbackMessage != nil {
+                    Spacer().frame(height: 20)
+                    scanProgressCard
+                }
                 Spacer()
                 bottomHint
             }
@@ -64,7 +78,7 @@ struct HealthScanView: View {
                 if isProcessing {
                     VStack(spacing: 10) {
                         ProgressView().tint(SpendyTheme.healthOK).scaleEffect(1.3)
-                        Text("Processing...").font(.caption).foregroundStyle(SpendyTheme.healthOK)
+                        Text(scanStageTitle).font(.caption).foregroundStyle(SpendyTheme.healthOK)
                     }
                 } else {
                     Image(systemName: "doc.text.viewfinder")
@@ -85,7 +99,7 @@ struct HealthScanView: View {
                 .multilineTextAlignment(.center)
 
             Text(isProcessing
-                 ? "Gemma 4 multimodal extracts your health markers automatically."
+                 ? scanStageDescription
                  : "Take a photo or choose a blood test or checkup report from your library.")
                 .font(.subheadline)
                 .foregroundStyle(SpendyTheme.textMuted)
@@ -108,11 +122,6 @@ struct HealthScanView: View {
                         .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadius))
                     }
 
-                    // Demo shortcut
-                    GradientButton("Use Demo Data", icon: "sparkles",
-                                   gradient: SpendyTheme.accentGradient) {
-                        Task { await runDemoExtraction() }
-                    }
                 }
             }
 
@@ -133,6 +142,57 @@ struct HealthScanView: View {
         .animation(.easeOut(duration: 0.45).delay(0.1), value: appeared)
     }
 
+    private var scanProgressCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader("Scan Progress", subtitle: "Local image extraction")
+            ProgressStepRow(
+                index: 1,
+                title: "Read image",
+                detail: "Preparing the selected report photo.",
+                state: stepState(for: .readingImage)
+            )
+            ProgressStepRow(
+                index: 2,
+                title: "Extract markers",
+                detail: "Gemma 4 reads health values and reference ranges.",
+                state: stepState(for: .extractingMarkers)
+            )
+            ProgressStepRow(
+                index: 3,
+                title: "Prepare results",
+                detail: "Formatting metrics and evidence trace for review.",
+                state: stepState(for: .preparingResults)
+            )
+
+            if let message = fallbackMessage {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(SpendyTheme.healthWarn)
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.88))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button {
+                        fallbackMessage = nil
+                        scanStage = .idle
+                    } label: {
+                        Text("Try another image")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(SpendyTheme.healthOK)
+                    }
+                }
+                .padding(12)
+                .insetSurface()
+            }
+        }
+        .padding(SpendyTheme.padding)
+        .cardStyle()
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
     // MARK: - Bottom Hint
     private var bottomHint: some View {
         HStack(spacing: 6) {
@@ -145,40 +205,90 @@ struct HealthScanView: View {
 
     // MARK: - Logic
     private func processItem(_ item: PhotosPickerItem) async {
+        guard !isProcessing else { return }
         isProcessing = true
+        defer {
+            isProcessing = false
+            selectedItem = nil
+        }
+        fallbackMessage = nil
+        scanStage = .readingImage
         if let data = try? await item.loadTransferable(type: Data.self) {
             appState.healthScanImageData = data
             do {
                 if appEnvironment.route == .onDevice && !appEnvironment.canRunOnDeviceInference {
-                    // Fallback to demo when local model is not ready in hackathon builds.
-                    appState.healthReport = .demo
-                    appState.lastInferenceSource = InferenceSourceLabel.mock.rawValue
+                    scanStage = .failed
+                    fallbackMessage = "The local model is not ready yet. Wait for model loading to finish, then scan again."
                 } else {
+                    scanStage = .extractingMarkers
                     let report = try await appEnvironment.router.healthExtractor.extractHealthReport(imageData: data)
-                    appState.healthReport = report
+                    scanStage = .preparingResults
+                    appState.setHealthReport(report)
                     appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
                 }
             } catch {
                 appEnvironment.markServiceError(error)
-                appState.healthReport = .demo
-                appState.lastInferenceSource = InferenceSourceLabel.mock.rawValue
+                scanStage = .failed
+                fallbackMessage = "The scan could not be parsed. Try a sharper photo with the full report visible."
             }
+        } else {
+            scanStage = .failed
+            fallbackMessage = "The selected image could not be read. Try choosing another image."
         }
-        isProcessing = false
-        navigateToResults = true
-    }
-
-    private func runDemoExtraction() async {
-        isProcessing = true
-        try? await Task.sleep(nanoseconds: 2_200_000_000)
-        appState.healthReport = .demo
-        isProcessing = false
-        navigateToResults = true
+        if fallbackMessage == nil {
+            scanStage = .preparingResults
+            navigateToResults = true
+        }
     }
 
     private func startPulse() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             pulseScale = 1.12
+        }
+    }
+
+    private var scanStageTitle: String {
+        switch scanStage {
+        case .idle: return "Ready"
+        case .readingImage: return "Reading image"
+        case .extractingMarkers: return "Extracting markers"
+        case .preparingResults: return "Preparing results"
+        case .failed: return "Review needed"
+        }
+    }
+
+    private var scanStageDescription: String {
+        switch scanStage {
+        case .idle:
+            return "Take a photo or choose a blood test or checkup report from your library."
+        case .readingImage:
+            return "Preparing the report image for local processing."
+        case .extractingMarkers:
+            return "Gemma 4 multimodal is extracting health markers on this iPhone."
+        case .preparingResults:
+            return "Formatting extracted values and evidence trace."
+        case .failed:
+            return "Review the message below and try a sharper full-page image."
+        }
+    }
+
+    private func stepState(for step: ScanStage) -> ProgressStepRow.StepState {
+        if scanStage == .failed {
+            return step == .preparingResults ? .failed : .complete
+        }
+        switch (scanStage, step) {
+        case (.idle, _):
+            return .pending
+        case (.readingImage, .readingImage),
+             (.extractingMarkers, .extractingMarkers),
+             (.preparingResults, .preparingResults):
+            return .active
+        case (.extractingMarkers, .readingImage),
+             (.preparingResults, .readingImage),
+             (.preparingResults, .extractingMarkers):
+            return .complete
+        default:
+            return .pending
         }
     }
 }
