@@ -134,7 +134,7 @@ du -sh ~/Gemma4Good/cactus/weights/gemma-4-e2b-m23k-cot-sft-lora-int4
 Expected size is roughly 4.5 GB.
 
 ### Option B: Convert From Hugging Face
-
+model: https://huggingface.co/EddieTsai123/gemma-4-e2b-m23k-cot-sft-lora
 ```bash
 cd ~/Gemma4Good/cactus
 source ./venv/bin/activate
