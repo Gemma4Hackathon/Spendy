@@ -1,14 +1,14 @@
 import Foundation
 
-struct FinanceInsightItem: Identifiable, Hashable {
-    let id = UUID()
+struct FinanceInsightItem: Identifiable, Hashable, Codable {
+    var id = UUID()
     var icon: String
     var title: String
     var amount: String
     var impact: String
 }
 
-struct FinanceSummary {
+struct FinanceSummary: Codable {
     var totalSpent: Double
     var topCategory: SpendingCategory
     var riskCategories: [SpendingCategory]

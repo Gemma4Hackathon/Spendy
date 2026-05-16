@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UIKit
 
 struct HealthScanView: View {
     @Environment(AppState.self) var appState
@@ -11,6 +12,7 @@ struct HealthScanView: View {
     @State private var navigateToResults = false
     @State private var scanStage: ScanStage = .idle
     @State private var fallbackMessage: String? = nil
+    @State private var showCameraPicker = false
 
     private enum ScanStage {
         case idle
@@ -46,6 +48,12 @@ struct HealthScanView: View {
         .onChange(of: selectedItem) { _, newItem in
             guard let newItem else { return }
             Task { await processItem(newItem) }
+        }
+        .sheet(isPresented: $showCameraPicker) {
+            CameraImagePicker { data in
+                Task { await processImageData(data) }
+            }
+            .ignoresSafeArea()
         }
         .onAppear {
             withAnimation(.easeOut(duration: 0.5)) { appeared = true }
@@ -108,6 +116,26 @@ struct HealthScanView: View {
 
             if !isProcessing {
                 VStack(spacing: 12) {
+                    Button {
+                        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                            showCameraPicker = true
+                        } else {
+                            scanStage = .failed
+                            fallbackMessage = "Camera is not available on this device. Choose an image from your library instead."
+                        }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "camera.fill")
+                                .font(.system(size: 17, weight: .semibold))
+                            Text("Take Photo").font(.system(size: 16, weight: .semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .background(SpendyTheme.healthOK)
+                        .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadius))
+                    }
+
                     // Photo Library
                     PhotosPicker(selection: $selectedItem, matching: .images) {
                         HStack(spacing: 10) {
@@ -118,8 +146,12 @@ struct HealthScanView: View {
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .frame(height: 52)
-                        .background(SpendyTheme.healthOK)
+                        .background(SpendyTheme.cardElevated)
                         .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadius))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: SpendyTheme.cornerRadius)
+                                .stroke(SpendyTheme.border, lineWidth: 1)
+                        )
                     }
 
                 }
@@ -154,7 +186,7 @@ struct HealthScanView: View {
             ProgressStepRow(
                 index: 2,
                 title: "Extract markers",
-                detail: "Gemma 4 reads health values and reference ranges.",
+                detail: "Trying Gemma 4 vision first; Apple Vision OCR is fallback.",
                 state: stepState(for: .extractingMarkers)
             )
             ProgressStepRow(
@@ -206,6 +238,17 @@ struct HealthScanView: View {
     // MARK: - Logic
     private func processItem(_ item: PhotosPickerItem) async {
         guard !isProcessing else { return }
+        if let data = try? await item.loadTransferable(type: Data.self) {
+            await processImageData(data)
+        } else {
+            scanStage = .failed
+            fallbackMessage = "The selected image could not be read. Try choosing another image."
+            selectedItem = nil
+        }
+    }
+
+    private func processImageData(_ data: Data) async {
+        guard !isProcessing else { return }
         isProcessing = true
         defer {
             isProcessing = false
@@ -213,27 +256,23 @@ struct HealthScanView: View {
         }
         fallbackMessage = nil
         scanStage = .readingImage
-        if let data = try? await item.loadTransferable(type: Data.self) {
-            appState.healthScanImageData = data
-            do {
-                if appEnvironment.route == .onDevice && !appEnvironment.canRunOnDeviceInference {
-                    scanStage = .failed
-                    fallbackMessage = "The local model is not ready yet. Wait for model loading to finish, then scan again."
-                } else {
-                    scanStage = .extractingMarkers
-                    let report = try await appEnvironment.router.healthExtractor.extractHealthReport(imageData: data)
-                    scanStage = .preparingResults
-                    appState.setHealthReport(report)
-                    appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
-                }
-            } catch {
-                appEnvironment.markServiceError(error)
+
+        appState.healthScanImageData = data
+        do {
+            if appEnvironment.route == .onDevice && !appEnvironment.canRunOnDeviceInference {
                 scanStage = .failed
-                fallbackMessage = "The scan could not be parsed. Try a sharper photo with the full report visible."
+                fallbackMessage = "The local model is not ready yet. Wait for model loading to finish, then scan again."
+            } else {
+                scanStage = .extractingMarkers
+                let report = try await appEnvironment.router.healthExtractor.extractHealthReport(imageData: data)
+                scanStage = .preparingResults
+                appState.setHealthReport(report)
+                appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
             }
-        } else {
+        } catch {
+            appEnvironment.markServiceError(error)
             scanStage = .failed
-            fallbackMessage = "The selected image could not be read. Try choosing another image."
+            fallbackMessage = "The scan could not be parsed. Try a sharper photo with the full report visible."
         }
         if fallbackMessage == nil {
             scanStage = .preparingResults
@@ -264,7 +303,7 @@ struct HealthScanView: View {
         case .readingImage:
             return "Preparing the report image for local processing."
         case .extractingMarkers:
-            return "Gemma 4 multimodal is extracting health markers on this iPhone."
+            return "Trying Gemma 4 vision first, with Apple Vision OCR as fallback."
         case .preparingResults:
             return "Formatting extracted values and evidence trace."
         case .failed:
@@ -289,6 +328,51 @@ struct HealthScanView: View {
             return .complete
         default:
             return .pending
+        }
+    }
+}
+
+private struct CameraImagePicker: UIViewControllerRepresentable {
+    let onImageData: (Data) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.cameraCaptureMode = .photo
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onImageData: onImageData, dismiss: dismiss)
+    }
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let onImageData: (Data) -> Void
+        let dismiss: DismissAction
+
+        init(onImageData: @escaping (Data) -> Void, dismiss: DismissAction) {
+            self.onImageData = onImageData
+            self.dismiss = dismiss
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            defer { dismiss() }
+            guard
+                let image = info[.originalImage] as? UIImage,
+                let data = image.jpegData(compressionQuality: 0.85)
+            else { return }
+            onImageData(data)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            dismiss()
         }
     }
 }

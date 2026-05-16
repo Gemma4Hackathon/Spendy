@@ -14,12 +14,12 @@ struct InsightsView: View {
             if let result = appState.insightResult {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: SpendyTheme.spacing) {
+                        analysisMonthPicker
                         headerSection
                         riskGauge(result)
                         signalPathSection(result)
+                        actionPlanSection(result)
                         findingsSection(result)
-                        BodyVisualizationCard(profile: appState.profile, result: result)
-                            .padding(.horizontal, SpendyTheme.padding)
                         footerNote
                     }
                     .padding(.horizontal, SpendyTheme.padding)
@@ -68,6 +68,63 @@ struct InsightsView: View {
                 }
             }
         }
+        .onChange(of: appState.analysisMonth) { _, _ in
+            errorMessage = nil
+            gaugeScore = 0
+            if let score = appState.insightResult?.overallRiskScore {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    withAnimation(.easeOut(duration: 0.8)) {
+                        gaugeScore = CGFloat(score)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Analysis Month
+    private var analysisMonthPicker: some View {
+        HStack(spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    appState.stepAnalysisMonth(by: -1)
+                }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(SpendyTheme.accent)
+                    .frame(width: 40, height: 36)
+            }
+
+            Spacer()
+
+            VStack(spacing: 2) {
+                Text("AI analysis month")
+                    .font(.caption2)
+                    .foregroundStyle(SpendyTheme.textMuted)
+                Text(appState.analysisMonthLabel)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .contentTransition(.numericText())
+            }
+
+            Spacer()
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    appState.stepAnalysisMonth(by: 1)
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(appState.canGoAnalysisForward ? SpendyTheme.accent : SpendyTheme.textMuted)
+                    .frame(width: 40, height: 36)
+            }
+            .disabled(!appState.canGoAnalysisForward)
+        }
+        .padding(.horizontal, SpendyTheme.padding)
+        .opacity(appeared ? 1 : 0)
+        .animation(.easeOut(duration: 0.35), value: appeared)
     }
 
     // MARK: - Header
@@ -82,7 +139,7 @@ struct InsightsView: View {
             }
             Text("Health × Finance Analysis")
                 .font(.title2).fontWeight(.bold).foregroundStyle(.white)
-            Text("AI-detected patterns between your spending habits and health markers.")
+            Text("AI-detected patterns for \(appState.analysisMonthLabel) spending and your health markers.")
                 .font(.caption).foregroundStyle(SpendyTheme.textMuted)
                 .multilineTextAlignment(.center)
         }
@@ -189,6 +246,86 @@ struct InsightsView: View {
         .animation(.easeOut(duration: 0.4).delay(0.10), value: appeared)
     }
 
+    private func actionPlanSection(_ result: InsightResult) -> some View {
+        let plan = result.actionPlan ?? InsightResult.demo.actionPlan
+        return VStack(alignment: .leading, spacing: 14) {
+            SectionHeader("7-Day Action Plan", subtitle: "Concrete movement and food changes")
+            if let plan {
+                VStack(alignment: .leading, spacing: 12) {
+                    actionPlanCard(
+                        title: "Movement",
+                        icon: "figure.run",
+                        color: SpendyTheme.healthOK,
+                        item: plan.movement
+                    )
+                    actionPlanCard(
+                        title: "Food",
+                        icon: "fork.knife",
+                        color: SpendyTheme.healthWarn,
+                        item: plan.food
+                    )
+                }
+            }
+        }
+        .padding(SpendyTheme.padding)
+        .cardStyle()
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 16)
+        .animation(.easeOut(duration: 0.4).delay(0.12), value: appeared)
+    }
+
+    private func actionPlanCard(
+        title: String,
+        icon: String,
+        color: Color,
+        item: InsightPlanItem
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(color)
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(color)
+            }
+            Text(item.title)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(item.recommendation)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.82))
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(item.whyItMatters)
+                .font(.caption2)
+                .foregroundStyle(SpendyTheme.textMuted)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.targetMetric)
+                    .font(.caption2)
+                    .foregroundStyle(color)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+                Text(item.timeframe)
+                    .font(.caption2)
+                    .foregroundStyle(SpendyTheme.textMuted)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(12)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
+        .overlay(
+            RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm)
+                .stroke(color.opacity(0.22), lineWidth: 1)
+        )
+    }
+
     // MARK: - Footer
     private var footerNote: some View {
         HStack(spacing: 8) {
@@ -206,6 +343,7 @@ struct InsightsView: View {
     // MARK: - Empty / Generate
     private var emptyState: some View {
         VStack(spacing: 20) {
+            analysisMonthPicker
             Image(systemName: "sparkles").font(.system(size: 52)).foregroundStyle(SpendyTheme.textMuted)
             Text("No insights yet").font(.title3).fontWeight(.semibold).foregroundStyle(.white)
             if let err = errorMessage {
@@ -213,7 +351,7 @@ struct InsightsView: View {
                     .font(.caption).foregroundStyle(SpendyTheme.healthBad)
                     .multilineTextAlignment(.center)
             } else {
-                Text("Complete a health scan and add spending, then tap Generate Insights.")
+                Text("Complete a health scan and use a month with spending, then tap Generate Insights.")
                     .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)
                     .multilineTextAlignment(.center)
             }
@@ -241,14 +379,18 @@ struct InsightsView: View {
             errorMessage = "Complete a health scan before generating insights."
             return
         }
+        guard appState.hasAnalysisSpendingData else {
+            errorMessage = "No expenses found for \(appState.analysisMonthLabel). Switch months or add expenses first."
+            return
+        }
 
         do {
             let result = try await appEnvironment.router.insightGenerator.generateInsights(
                 profile: appState.profile,
-                spending: appState.spendingEntries,
+                spending: appState.analysisEntries,
                 health: healthReport
             )
-            appState.insightResult = result
+            appState.setInsightResult(result, for: appState.analysisMonth)
             appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
             appState.saveToDisk()
             withAnimation(.easeOut(duration: 1.2)) {
@@ -423,6 +565,11 @@ private struct InsightConnectionCard: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(action.title)
                                     .font(.subheadline).fontWeight(.medium).foregroundStyle(.white)
+                                Text(action.description)
+                                    .font(.caption)
+                                    .foregroundStyle(.white.opacity(0.76))
+                                    .lineSpacing(2)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 Text(action.expectedOutcome)
                                     .font(.caption).foregroundStyle(SpendyTheme.textMuted)
                                 HStack(spacing: 4) {

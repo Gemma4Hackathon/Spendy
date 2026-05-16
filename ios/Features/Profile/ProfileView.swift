@@ -20,7 +20,6 @@ struct ProfileView: View {
                 goalsSection
                 demoSection
                 lifestyleSection
-                apiKeySection
             }
             .padding(.top, 8)
             .padding(.bottom, 40)
@@ -178,12 +177,26 @@ struct ProfileView: View {
                     withAnimation(.spring(duration: 0.4)) { appState.loadFinanceDemo() }
                 }
             } else {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(SpendyTheme.healthOK)
-                    Text("Finance demo loaded").font(.subheadline).foregroundStyle(SpendyTheme.healthOK)
-                    Spacer()
-                    Button("Clear") { withAnimation { appState.clearAll() } }
-                        .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(SpendyTheme.healthOK)
+                        Text("Finance demo loaded").font(.subheadline).foregroundStyle(SpendyTheme.healthOK)
+                        Spacer()
+                    }
+                    HStack(spacing: 12) {
+                        Button {
+                            withAnimation(.spring(duration: 0.4)) { appState.loadFinanceDemo() }
+                        } label: {
+                            Label("Reload Demo", systemImage: "arrow.clockwise")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(SpendyTheme.accent)
+                        }
+                        Spacer()
+                        Button("Clear") { withAnimation { appState.clearAll() } }
+                            .font(.subheadline)
+                            .foregroundStyle(SpendyTheme.textMuted)
+                    }
                 }
             }
         }

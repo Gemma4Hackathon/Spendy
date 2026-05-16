@@ -10,7 +10,8 @@ struct FinanceAssistantView: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: SpendyTheme.spacing) {
-                if appState.hasSpendingData {
+                analysisMonthPicker
+                if appState.hasAnalysisSpendingData {
                     summaryHeader
                     if let summary {
                         riskChips(summary)
@@ -18,6 +19,8 @@ struct FinanceAssistantView: View {
                         aiMessageCard(summary)
                     } else if isLoading {
                         loadingCard
+                    } else {
+                        readyCard
                     }
                 } else {
                     emptyState
@@ -39,23 +42,64 @@ struct FinanceAssistantView: View {
                     Image(systemName: "arrow.clockwise")
                         .foregroundStyle(SpendyTheme.accent)
                 }
-                .disabled(isLoading)
+                .disabled(isLoading || !appState.hasAnalysisSpendingData)
             }
         }
         .onAppear {
             withAnimation(.easeOut(duration: 0.45)) { appeared = true }
-            // Only load if model is already ready; otherwise onChange below handles it
-            if summary == nil && !isLoading && appState.hasSpendingData &&
-               appEnvironment.onDeviceInstallState == .ready {
-                Task { await loadSummary() }
-            }
+            summary = appState.financeSummary(for: appState.analysisMonth)
         }
-        .onChange(of: appEnvironment.onDeviceInstallState) { _, newState in
-            // Auto-load when model finishes initializing
-            if newState == .ready && summary == nil && !isLoading && appState.hasSpendingData {
-                Task { await loadSummary() }
-            }
+        .onChange(of: appState.analysisMonth) { _, _ in
+            summary = appState.financeSummary(for: appState.analysisMonth)
         }
+    }
+
+    // MARK: - Analysis Month
+    private var analysisMonthPicker: some View {
+        HStack(spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    appState.stepAnalysisMonth(by: -1)
+                    summary = appState.financeSummary(for: appState.analysisMonth)
+                }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(SpendyTheme.accent)
+                    .frame(width: 40, height: 36)
+            }
+
+            Spacer()
+
+            VStack(spacing: 2) {
+                Text("Analyzing")
+                    .font(.caption2)
+                    .foregroundStyle(SpendyTheme.textMuted)
+                Text(appState.analysisMonthLabel)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .contentTransition(.numericText())
+            }
+
+            Spacer()
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    appState.stepAnalysisMonth(by: 1)
+                    summary = appState.financeSummary(for: appState.analysisMonth)
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(appState.canGoAnalysisForward ? SpendyTheme.accent : SpendyTheme.textMuted)
+                    .frame(width: 40, height: 36)
+            }
+            .disabled(!appState.canGoAnalysisForward)
+        }
+        .padding(.horizontal, SpendyTheme.padding)
+        .opacity(appeared ? 1 : 0)
+        .animation(.easeOut(duration: 0.35), value: appeared)
     }
 
     // MARK: - Summary Header
@@ -73,18 +117,18 @@ struct FinanceAssistantView: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Total Spending")
+                Text("Analyzing \(appState.analysisMonthLabel) spending")
                     .font(.caption).foregroundStyle(SpendyTheme.textMuted)
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text("NT$\(Int(appState.totalMonthlySpent))")
+                    Text("NT$\(Int(summary?.totalSpent ?? appState.analysisTotalSpent))")
                         .font(.system(size: 36, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
-                    Text("this month")
+                    Text("tracked")
                         .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)
                 }
             }
 
-            if let top = appState.topCategory {
+            if let top = summary?.topCategory ?? appState.analysisTopCategory {
                 HStack(spacing: 6) {
                     Image(systemName: top.icon)
                         .font(.system(size: 13))
@@ -100,6 +144,25 @@ struct FinanceAssistantView: View {
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 16)
         .animation(.easeOut(duration: 0.4), value: appeared)
+    }
+
+    private var readyCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(SpendyTheme.accent)
+                Text("Ready to analyze")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+            }
+            Text("Tap refresh to run Gemma 4 on \(appState.analysisMonthLabel) spending only.")
+                .font(.caption)
+                .foregroundStyle(SpendyTheme.textMuted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(SpendyTheme.padding)
+        .cardStyle()
     }
 
     // MARK: - Risk Chips
@@ -279,6 +342,31 @@ struct FinanceAssistantView: View {
             .padding(12)
             .background(SpendyTheme.healthOK.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
+
+            if !s.aiMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "text.bubble.fill")
+                            .font(.caption)
+                            .foregroundStyle(SpendyTheme.accent)
+                        Text("Spendy AI notes")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(SpendyTheme.textMuted)
+                            .textCase(.uppercase)
+                            .kerning(0.5)
+                    }
+
+                    MarkdownContentView(
+                        text: s.aiMessage,
+                        bodyFont: .subheadline,
+                        textColor: .white.opacity(0.88),
+                        accentColor: .white
+                    )
+                }
+                .padding(12)
+                .insetSurface()
+            }
         }
     }
 
@@ -302,7 +390,7 @@ struct FinanceAssistantView: View {
                 .foregroundStyle(SpendyTheme.textMuted)
             Text("No spending data")
                 .font(.title3).fontWeight(.semibold).foregroundStyle(.white)
-            Text("Add expenses in the Spending tab, or load the demo from Profile.")
+            Text("No expenses found for \(appState.analysisMonthLabel). Switch months here, add expenses in Spending, or load the finance demo from Profile.")
                 .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)
                 .multilineTextAlignment(.center)
         }
@@ -312,11 +400,13 @@ struct FinanceAssistantView: View {
     // MARK: - Actions
     private func loadSummary() async {
         guard !isLoading else { return }
-        guard appState.hasSpendingData else { return }
+        guard appState.hasAnalysisSpendingData else { return }
         isLoading = true
         defer { isLoading = false }
-        let result = await appEnvironment.router.financeProvider.fetchFinanceSummary(entries: appState.spendingEntries)
+        let entries = appState.analysisEntries
+        let result = await appEnvironment.router.financeProvider.fetchFinanceSummary(entries: entries)
         summary = result
+        appState.setFinanceSummary(result, for: appState.analysisMonth)
         appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
     }
 }

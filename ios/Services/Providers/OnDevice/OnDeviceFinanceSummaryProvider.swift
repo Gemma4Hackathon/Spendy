@@ -91,7 +91,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         \(recent)
 
         Complete this JSON using only real values from the data above:
-        {"shortTitle":"3-5 words, no alarm language","quickTake":"one concrete sentence with NT$ amount and percentage, maximum 20 words","primaryAction":"one measurable 7-day action with NT$ target, maximum 16 words","items":[{"icon":"fork.knife","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"},{"icon":"cup.and.saucer.fill","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"},{"icon":"moon.fill","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"}]}
+        {"shortTitle":"3-5 words, no alarm language","quickTake":"one concrete sentence with NT$ amount and percentage, maximum 20 words","primaryAction":"one measurable 7-day action with NT$ target, maximum 16 words","items":[{"icon":"fork.knife","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"},{"icon":"cup.and.saucer.fill","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"},{"icon":"moon.fill","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"}],"markdownNote":"Markdown only. Include one short paragraph, a 3-row table, and one 7-day checklist. Use concrete NT$ amounts. Maximum 120 words."}
 
         If uncertain, still return the JSON using the category totals. Do not say you need more information.
         """
@@ -123,8 +123,14 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         var quickTake: String
         var primaryAction: String
         var items: [FinanceInsightItem]
+        var markdownNote: String
 
         var aiMessage: String {
+            let trimmedNote = markdownNote.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedNote.isEmpty {
+                return trimmedNote
+            }
+
             let rows = items.map { item in
                 "| \(item.title) | \(item.amount) | \(item.impact) |"
             }.joined(separator: "\n")
@@ -176,7 +182,8 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             shortTitle: dict["shortTitle"] as? String ?? fallback.shortTitle,
             quickTake: dict["quickTake"] as? String ?? fallback.quickTake,
             primaryAction: dict["primaryAction"] as? String ?? fallback.primaryAction,
-            items: Array(items.prefix(3))
+            items: Array(items.prefix(3)),
+            markdownNote: dict["markdownNote"] as? String ?? fallback.markdownNote
         )
     }
 
@@ -205,8 +212,42 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             primaryAction: "Keep \(topCategory) under NT$\(weeklyTarget) for the next 7 days.",
             items: topItems.isEmpty ? [
                 FinanceInsightItem(icon: "chart.bar.fill", title: "Monthly spending", amount: "NT$\(Int(total))", impact: "Track before optimizing")
-            ] : topItems
+            ] : topItems,
+            markdownNote: fallbackMarkdownNote(
+                topCategory: topCategory,
+                topAmount: topAmount,
+                topShare: topShare,
+                weeklyTarget: weeklyTarget,
+                items: topItems
+            )
         )
+    }
+
+    private func fallbackMarkdownNote(
+        topCategory: String,
+        topAmount: Double,
+        topShare: Int,
+        weeklyTarget: Int,
+        items: [FinanceInsightItem]
+    ) -> String {
+        let tableRows = items.prefix(3).map { item in
+            "| \(item.title) | \(item.amount) | \(item.impact) |"
+        }.joined(separator: "\n")
+        let rows = tableRows.isEmpty
+            ? "| \(topCategory) | NT$\(Int(topAmount)) | Set a weekly cap |"
+            : tableRows
+
+        return """
+        ## AI budget note
+
+        \(topCategory) is the clearest lever this week at NT$\(Int(topAmount)), about \(topShare)% of tracked spending. Use a small cap instead of cutting everything at once.
+
+        | Focus | Current | Next move |
+        | --- | ---: | --- |
+        \(rows)
+
+        **7-day checklist:** keep \(topCategory) under NT$\(weeklyTarget), skip one repeat purchase, and review the result next week.
+        """
     }
 
     private func extractJSONObject(from text: String) -> String {

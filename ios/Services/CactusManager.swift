@@ -211,9 +211,28 @@ final class CactusManager {
             .appendingPathComponent("cactus-image-\(UUID().uuidString)")
             .appendingPathExtension("jpg")
 
-        let jpegData = UIImage(data: imageData)?.jpegData(compressionQuality: 0.92) ?? imageData
+        let jpegData = Self.resizedJPEGData(from: imageData, maxDimension: 1280, compressionQuality: 0.75) ?? imageData
         try jpegData.write(to: url, options: .atomic)
         return url
+    }
+
+    private static func resizedJPEGData(
+        from imageData: Data,
+        maxDimension: CGFloat,
+        compressionQuality: CGFloat
+    ) -> Data? {
+        guard let image = UIImage(data: imageData) else { return nil }
+        let size = image.size
+        let longestSide = max(size.width, size.height)
+        guard longestSide > 0 else { return nil }
+
+        let scale = min(1, maxDimension / longestSide)
+        let targetSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+        return resized.jpegData(compressionQuality: compressionQuality)
     }
 
     private func resolveModelPath() throws -> String {

@@ -9,6 +9,15 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
     // MARK: - HealthReportExtracting
 
     func extractHealthReport(imageData: Data) async throws -> HealthReport {
+        if isModelReady {
+            do {
+                print("[HealthExtractor] Trying Gemma 4 vision extraction...")
+                return try await runVisionInference(imageData: imageData)
+            } catch {
+                print("[HealthExtractor] Gemma 4 vision failed, falling back to Apple Vision OCR: \(error.localizedDescription)")
+            }
+        }
+
         let text = try await recognizeText(from: imageData)
         print("[HealthExtractor] OCR text (\(text.count) chars): \(text.prefix(300))")
 
@@ -60,7 +69,49 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
     }
 
-    // MARK: - Text Inference
+    // MARK: - Vision / Text Inference
+
+    private func runVisionInference(imageData: Data) async throws -> HealthReport {
+        let systemPrompt = """
+        You are a medical data extraction assistant. \
+        The user image is a health checkup or blood test report. \
+        Read the visible table values directly from the image. \
+        Respond ONLY with one valid JSON object. No explanation, no markdown.
+        """
+
+        let userMessage = """
+        Extract all visible health metrics from this report image.
+
+        Return this exact JSON structure:
+        {
+          "metrics": [
+            {"name":"Blood Pressure","value":"138/89","unit":"mmHg","normalRange":"< 120/80","status":"High"}
+          ],
+          "evidenceTrace": [
+            "Blood Pressure 138/89 mmHg is above < 120/80, so it is flagged High."
+          ]
+        }
+
+        For each metric provide:
+        - name in English
+        - value as a numeric string
+        - unit such as mg/dL, mmHg, %, g/L, 10^9/L
+        - normalRange if visible or inferable from the report
+        - status: "Normal", "Borderline", or "High"
+
+        In evidenceTrace, write 2-5 concise patient-friendly bullets explaining which values were read and why they were flagged.
+        If you cannot read the image or find no metrics, return {"metrics":[],"evidenceTrace":[]}
+        """
+
+        let rawText = try await CactusManager.shared.visionComplete(
+            systemPrompt: systemPrompt,
+            userMessage: userMessage,
+            imageData: imageData,
+            maxTokens: 900
+        )
+
+        return try parseMetrics(from: rawText, labName: "Extracted by Gemma 4 Vision")
+    }
 
     private func runTextInference(ocrText: String) async throws -> HealthReport {
         let systemPrompt = """
@@ -102,7 +153,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
             temperature: 0.05
         )
 
-        return try parseMetrics(from: rawText)
+        return try parseMetrics(from: rawText, labName: "Apple Vision OCR + Gemma 4")
     }
 
     // MARK: - Parse JSON → HealthReport
@@ -231,7 +282,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
     }
 
-    private func parseMetrics(from text: String) throws -> HealthReport {
+    private func parseMetrics(from text: String, labName: String) throws -> HealthReport {
         print("[HealthExtractor] Raw vision text (\(text.count) chars): \(text.prefix(220))")
         let cleaned = extractJSONObject(from: text)
         guard let data = cleaned.data(using: .utf8) else {
@@ -293,7 +344,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         return HealthReport(
             metrics:    metrics,
             reportDate: Date(),
-            labName:    "Extracted by Gemma 4 (On-Device)",
+            labName:    labName,
             evidenceTrace: parsed.evidenceTrace.isEmpty ? buildFallbackTrace(metrics: metrics) : parsed.evidenceTrace
         )
     }

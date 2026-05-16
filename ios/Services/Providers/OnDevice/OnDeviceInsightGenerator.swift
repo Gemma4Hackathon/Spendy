@@ -30,12 +30,12 @@ final class OnDeviceInsightGenerator: InsightGenerating {
 
         do {
             let rawText = try await requestInsightJSON(userMessage: userMessage, isRetry: false)
-            return try parseInsightResult(from: rawText, spending: spending)
+            return try parseInsightResult(from: rawText, spending: spending, health: health)
         } catch {
             print("[InsightGenerator] First attempt failed: \(error.localizedDescription). Retrying with stricter schema.")
             let retryMessage = buildRetryUserMessage(from: userMessage)
             let rawText = try await requestInsightJSON(userMessage: retryMessage, isRetry: true)
-            return try parseInsightResult(from: rawText, spending: spending)
+            return try parseInsightResult(from: rawText, spending: spending, health: health)
         }
     }
 
@@ -43,7 +43,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         try await CactusManager.shared.complete(
             systemPrompt: insightSystemPrompt(isRetry: isRetry),
             userMessage: userMessage,
-            maxTokens: 1400,
+            maxTokens: 2000,
             temperature: isRetry ? 0.05 : 0.1
         )
     }
@@ -57,12 +57,16 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         You are an on-device health-and-spending insight engine.
         \(retryInstruction)
         The response MUST begin with { and end with }.
-        Required top-level keys exactly: riskScore, monthlyAtRisk, findings.
+        Required top-level keys exactly: riskScore, monthlyAtRisk, actionPlan, findings.
+        actionPlan MUST contain movement and food objects.
+        Each actionPlan object MUST contain title, recommendation, whyItMatters, targetMetric, timeframe.
         The findings array MUST contain 2 objects.
+        Each finding MUST contain 2 to 3 concrete actions.
         Do not output query_details, example_data, schema descriptions, markdown, comments, or text outside JSON.
         Do not use placeholders such as REPLACE.
         Do not use emojis.
         Use only the supplied Spending and Health values.
+        Make actions practical: what to do, why it matters, and what can change in 7 days.
         """
     }
 
@@ -112,10 +116,13 @@ final class OnDeviceInsightGenerator: InsightGenerating {
 
         REQUIRED OUTPUT:
         Return one JSON object matching this schema exactly:
-        {"riskScore":\(suggestedRisk),"monthlyAtRisk":\(atRiskEstimate),"findings":[{"icon":"fork.knife","cause":"\(cat1) spending pattern","causeDetail":"REPLACE with 1 sentence about \(cat1) and health risk","healthImpact":"REPLACE with metric name","healthDetail":"REPLACE using \(health1)","risk":"REPLACE with 1 sentence consequence","accentColor":"amber","actions":[{"title":"REPLACE with short action","description":"REPLACE why","expectedOutcome":"REPLACE result","timeframe":"REPLACE time","difficulty":2}]},{"icon":"moon.fill","cause":"\(cat2) spending pattern","causeDetail":"REPLACE with 1 sentence about \(cat2) and health risk","healthImpact":"REPLACE with metric name","healthDetail":"REPLACE using \(health2)","risk":"REPLACE with 1 sentence consequence","accentColor":"red","actions":[{"title":"REPLACE with short action","description":"REPLACE why","expectedOutcome":"REPLACE result","timeframe":"REPLACE time","difficulty":2}]}]}
+        {"riskScore":\(suggestedRisk),"monthlyAtRisk":\(atRiskEstimate),"actionPlan":{"movement":{"title":"REPLACE movement title","recommendation":"REPLACE with specific daily walking, jogging, or cycling duration","whyItMatters":"REPLACE with may help support language tied to health metrics","targetMetric":"REPLACE metric names","timeframe":"Next 7 days"},"food":{"title":"REPLACE food title","recommendation":"REPLACE with specific delivery, fast food, sugar drink, or grocery swap target","whyItMatters":"REPLACE with helps reduce exposure language tied to health metrics","targetMetric":"REPLACE metric names","timeframe":"Next 7 days"}},"findings":[{"icon":"fork.knife","cause":"\(cat1) spending pattern","causeDetail":"REPLACE with 1 sentence about \(cat1) and health risk","healthImpact":"REPLACE with metric name","healthDetail":"REPLACE using \(health1)","risk":"REPLACE with 1 sentence consequence","accentColor":"amber","actions":[{"title":"REPLACE short action 1","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 2","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 3","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":1}]},{"icon":"moon.fill","cause":"\(cat2) spending pattern","causeDetail":"REPLACE with 1 sentence about \(cat2) and health risk","healthImpact":"REPLACE with metric name","healthDetail":"REPLACE using \(health2)","risk":"REPLACE with 1 sentence consequence","accentColor":"red","actions":[{"title":"REPLACE short action 1","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 2","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 3","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":1}]}]}
 
         RULES:
         Replace every REPLACE value with a concrete sentence based on DATA.
+        Every action title must start with a verb and include either a frequency, limit, or NT$ target.
+        Every action description must connect the spending behavior to the health metric.
+        Every expectedOutcome must be a patient-friendly 7-day outcome, not a diagnosis.
         Do not create generic example data.
         Do not include query_details or example_data.
         """
@@ -126,16 +133,18 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         \(userMessage)
 
         RETRY CONSTRAINTS:
-        Your previous response was invalid because it did not contain top-level riskScore, monthlyAtRisk, and findings.
+        Your previous response was invalid because it did not contain top-level riskScore, monthlyAtRisk, actionPlan, and findings.
         Output only the required JSON object now.
         The first character must be {.
+        Include actionPlan.movement and actionPlan.food with title, recommendation, whyItMatters, targetMetric, timeframe.
         The top-level object must contain a non-empty findings array with exactly 2 findings.
+        Each finding must contain at least 2 actions.
         """
     }
 
     // MARK: - Parse JSON → InsightResult
 
-    private func parseInsightResult(from text: String, spending: [SpendingEntry]) throws -> InsightResult {
+    private func parseInsightResult(from text: String, spending: [SpendingEntry], health: HealthReport) throws -> InsightResult {
         print("[InsightGenerator] Raw text (\(text.count) chars): \(text.prefix(200))")
         let cleaned = extractJSONObject(from: text)
         print("[InsightGenerator] Extracted JSON (\(cleaned.count) chars): \(cleaned.prefix(300))")
@@ -152,6 +161,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         let monthlyAtRisk = parseDouble(dict["monthlyAtRisk"])
             ?? Double(spending.reduce(0) { $0 + $1.amount } / 2)
         let findingsArray  = dict["findings"]       as? [[String: Any]] ?? []
+        let actionPlan = parseActionPlan(dict["actionPlan"]) ?? fallbackActionPlan(health: health)
 
         let findings: [InsightConnection] = findingsArray.compactMap { f in
             guard
@@ -182,6 +192,10 @@ final class OnDeviceInsightGenerator: InsightGenerating {
                 )
             }
 
+            let displayActions = actions.isEmpty
+                ? fallbackActions(cause: cause, healthImpact: healthImpact)
+                : Array(actions.prefix(3))
+
             return InsightConnection(
                 icon:          icon,
                 cause:         cause,
@@ -190,7 +204,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
                 healthDetail:  healthDetail,
                 risk:          risk,
                 accentColor:   accentColor,
-                actions:       actions
+                actions:       displayActions
             )
         }
 
@@ -205,7 +219,8 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             keyFindings:          findings,
             overallRiskScore:     riskScore,
             monthlySpendingAtRisk: monthlyAtRisk,
-            generatedAt:          Date()
+            generatedAt:          Date(),
+            actionPlan:           actionPlan
         )
     }
 
@@ -235,5 +250,79 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         if let intValue = value as? Int { return Double(intValue) }
         if let stringValue = value as? String { return Double(stringValue) }
         return nil
+    }
+
+    private func fallbackActions(cause: String, healthImpact: String) -> [InsightAction] {
+        [
+            InsightAction(
+                title: "Set a 7-day limit",
+                description: "Use the \(cause) pattern as the first spending lever tied to \(healthImpact).",
+                expectedOutcome: "Clearer weekly control without changing every habit at once.",
+                timeframe: "7 days",
+                difficulty: 1
+            ),
+            InsightAction(
+                title: "Replace one repeat purchase",
+                description: "Swapping one repeated purchase lowers exposure while keeping the plan realistic.",
+                expectedOutcome: "One visible win to review in the next insight cycle.",
+                timeframe: "7 days",
+                difficulty: 2
+            )
+        ]
+    }
+
+    private func parseActionPlan(_ value: Any?) -> InsightActionPlan? {
+        guard let dict = value as? [String: Any],
+              let movement = parsePlanItem(dict["movement"]),
+              let food = parsePlanItem(dict["food"]) else {
+            return nil
+        }
+        return InsightActionPlan(movement: movement, food: food)
+    }
+
+    private func parsePlanItem(_ value: Any?) -> InsightPlanItem? {
+        guard
+            let dict = value as? [String: Any],
+            let title = dict["title"] as? String,
+            let recommendation = dict["recommendation"] as? String,
+            let whyItMatters = dict["whyItMatters"] as? String,
+            let targetMetric = dict["targetMetric"] as? String,
+            let timeframe = dict["timeframe"] as? String
+        else { return nil }
+
+        return InsightPlanItem(
+            title: title,
+            recommendation: recommendation,
+            whyItMatters: whyItMatters,
+            targetMetric: targetMetric,
+            timeframe: timeframe
+        )
+    }
+
+    private func fallbackActionPlan(health: HealthReport) -> InsightActionPlan {
+        let abnormalMetrics = health.metrics
+            .filter { $0.status != .normal }
+            .prefix(3)
+            .map(\.name)
+        let target = abnormalMetrics.isEmpty
+            ? "Blood pressure, glucose, triglycerides"
+            : abnormalMetrics.joined(separator: ", ")
+
+        return InsightActionPlan(
+            movement: InsightPlanItem(
+                title: "Walk or jog 25 minutes daily",
+                recommendation: "Do a brisk walk or easy jog for 25 minutes on at least 5 days this week.",
+                whyItMatters: "Consistent aerobic movement may help support blood pressure, glucose control, and triglyceride management.",
+                targetMetric: target,
+                timeframe: "Next 7 days"
+            ),
+            food: InsightPlanItem(
+                title: "Replace two delivery meals",
+                recommendation: "Swap two delivery, fast food, or late-night meals for grocery-based meals with lean protein and vegetables.",
+                whyItMatters: "This helps reduce exposure to high-salt, fried, and sugary foods connected to the current marker pattern.",
+                targetMetric: target,
+                timeframe: "Next 7 days"
+            )
+        )
     }
 }

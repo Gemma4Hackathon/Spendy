@@ -23,12 +23,27 @@ struct InsightConnection: Identifiable, Codable {
     var actions: [InsightAction]
 }
 
+// MARK: - 7-Day Action Plan
+struct InsightPlanItem: Codable {
+    var title: String
+    var recommendation: String
+    var whyItMatters: String
+    var targetMetric: String
+    var timeframe: String
+}
+
+struct InsightActionPlan: Codable {
+    var movement: InsightPlanItem
+    var food: InsightPlanItem
+}
+
 // MARK: - Final Result
 struct InsightResult: Codable {
     var keyFindings: [InsightConnection]
     var overallRiskScore: Int        // 0–100
     var monthlySpendingAtRisk: Double
     var generatedAt: Date
+    var actionPlan: InsightActionPlan? = nil
 
     // MARK: Demo Data
     static let demo = InsightResult(
@@ -75,6 +90,22 @@ struct InsightResult: Codable {
         ],
         overallRiskScore: 68,
         monthlySpendingAtRisk: 3200,
-        generatedAt: Date()
+        generatedAt: Date(),
+        actionPlan: InsightActionPlan(
+            movement: InsightPlanItem(
+                title: "Walk or jog 25 minutes daily",
+                recommendation: "Do a brisk walk or easy jog after dinner for 25 minutes on at least 5 days.",
+                whyItMatters: "Regular aerobic movement may help support blood pressure, fasting glucose, and triglyceride control.",
+                targetMetric: "Blood Pressure, Fasting Glucose, Triglycerides",
+                timeframe: "Next 7 days"
+            ),
+            food: InsightPlanItem(
+                title: "Replace two delivery meals",
+                recommendation: "Swap two delivery or fast food meals for grocery-based meals with lean protein and vegetables.",
+                whyItMatters: "Reducing fried, salty, and sugary meals helps reduce exposure tied to LDL, triglycerides, and glucose spikes.",
+                targetMetric: "LDL Cholesterol, Triglycerides, HbA1c",
+                timeframe: "Next 7 days"
+            )
+        )
     )
 }
