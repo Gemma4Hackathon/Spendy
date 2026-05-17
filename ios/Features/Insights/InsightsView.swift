@@ -94,6 +94,7 @@ struct InsightsView: View {
                     .foregroundStyle(SpendyTheme.accent)
                     .frame(width: 40, height: 36)
             }
+            .disabled(isGenerating)
 
             Spacer()
 
@@ -120,7 +121,7 @@ struct InsightsView: View {
                     .foregroundStyle(appState.canGoAnalysisForward ? SpendyTheme.accent : SpendyTheme.textMuted)
                     .frame(width: 40, height: 36)
             }
-            .disabled(!appState.canGoAnalysisForward)
+            .disabled(isGenerating || !appState.canGoAnalysisForward)
         }
         .padding(.horizontal, SpendyTheme.padding)
         .opacity(appeared ? 1 : 0)
@@ -384,17 +385,21 @@ struct InsightsView: View {
             return
         }
 
+        let analysisMonth = appState.analysisMonth
+        let spending = appState.analysisEntries
         do {
             let result = try await appEnvironment.router.insightGenerator.generateInsights(
                 profile: appState.profile,
-                spending: appState.analysisEntries,
+                spending: spending,
                 health: healthReport
             )
-            appState.setInsightResult(result, for: appState.analysisMonth)
+            appState.setInsightResult(result, for: analysisMonth)
             appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
             appState.saveToDisk()
-            withAnimation(.easeOut(duration: 1.2)) {
-                gaugeScore = CGFloat(result.overallRiskScore)
+            if Calendar.current.isDate(appState.analysisMonth, equalTo: analysisMonth, toGranularity: .month) {
+                withAnimation(.easeOut(duration: 1.2)) {
+                    gaugeScore = CGFloat(result.overallRiskScore)
+                }
             }
         } catch {
             errorMessage = error.localizedDescription

@@ -41,6 +41,10 @@ final class CactusManager {
 
     private init() {}
 
+    private struct SendableModelHandle: @unchecked Sendable {
+        let rawValue: CactusModelT
+    }
+
     // MARK: - Load
 
     /// Runs cactusInit on a BACKGROUND thread — never blocks the UI.
@@ -79,6 +83,23 @@ final class CactusManager {
         if let h = modelHandle { cactusDestroy(h) }
         modelHandle = nil
         state = .idle
+    }
+
+    func releaseModelForMemoryPressure() async {
+        let handle = modelHandle
+        modelHandle = nil
+        await MainActor.run { self.state = .idle }
+
+        guard let handle else { return }
+        let sendableHandle = SendableModelHandle(rawValue: handle)
+        await withCheckedContinuation { continuation in
+            inferenceQueue.async {
+                print("[CactusManager] Releasing model after memory pressure...")
+                cactusDestroy(sendableHandle.rawValue)
+                print("[CactusManager] Model released.")
+                continuation.resume()
+            }
+        }
     }
 
     // MARK: - Inference
@@ -211,7 +232,7 @@ final class CactusManager {
             .appendingPathComponent("cactus-image-\(UUID().uuidString)")
             .appendingPathExtension("jpg")
 
-        let jpegData = Self.resizedJPEGData(from: imageData, maxDimension: 1280, compressionQuality: 0.75) ?? imageData
+        let jpegData = Self.resizedJPEGData(from: imageData, maxDimension: 896, compressionQuality: 0.62) ?? imageData
         try jpegData.write(to: url, options: .atomic)
         return url
     }
@@ -222,17 +243,21 @@ final class CactusManager {
         compressionQuality: CGFloat
     ) -> Data? {
         guard let image = UIImage(data: imageData) else { return nil }
-        let size = image.size
-        let longestSide = max(size.width, size.height)
-        guard longestSide > 0 else { return nil }
+        return autoreleasepool {
+            let size = image.size
+            let longestSide = max(size.width, size.height)
+            guard longestSide > 0 else { return nil }
 
-        let scale = min(1, maxDimension / longestSide)
-        let targetSize = CGSize(width: size.width * scale, height: size.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: targetSize)
-        let resized = renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: targetSize))
+            let scale = min(1, maxDimension / longestSide)
+            let targetSize = CGSize(width: size.width * scale, height: size.height * scale)
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+            let resized = renderer.image { _ in
+                image.draw(in: CGRect(origin: .zero, size: targetSize))
+            }
+            return resized.jpegData(compressionQuality: compressionQuality)
         }
-        return resized.jpegData(compressionQuality: compressionQuality)
     }
 
     private func resolveModelPath() throws -> String {

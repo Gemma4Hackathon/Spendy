@@ -68,6 +68,7 @@ struct FinanceAssistantView: View {
                     .foregroundStyle(SpendyTheme.accent)
                     .frame(width: 40, height: 36)
             }
+            .disabled(isLoading)
 
             Spacer()
 
@@ -95,7 +96,7 @@ struct FinanceAssistantView: View {
                     .foregroundStyle(appState.canGoAnalysisForward ? SpendyTheme.accent : SpendyTheme.textMuted)
                     .frame(width: 40, height: 36)
             }
-            .disabled(!appState.canGoAnalysisForward)
+            .disabled(isLoading || !appState.canGoAnalysisForward)
         }
         .padding(.horizontal, SpendyTheme.padding)
         .opacity(appeared ? 1 : 0)
@@ -338,8 +339,10 @@ struct FinanceAssistantView: View {
                         .foregroundStyle(.white.opacity(0.88))
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Spacer(minLength: 0)
             }
             .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(SpendyTheme.healthOK.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: SpendyTheme.cornerRadiusSm))
 
@@ -403,10 +406,13 @@ struct FinanceAssistantView: View {
         guard appState.hasAnalysisSpendingData else { return }
         isLoading = true
         defer { isLoading = false }
+        let analysisMonth = appState.analysisMonth
         let entries = appState.analysisEntries
         let result = await appEnvironment.router.financeProvider.fetchFinanceSummary(entries: entries)
-        summary = result
-        appState.setFinanceSummary(result, for: appState.analysisMonth)
+        appState.setFinanceSummary(result, for: analysisMonth)
+        if Calendar.current.isDate(appState.analysisMonth, equalTo: analysisMonth, toGranularity: .month) {
+            summary = result
+        }
         appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
     }
 }

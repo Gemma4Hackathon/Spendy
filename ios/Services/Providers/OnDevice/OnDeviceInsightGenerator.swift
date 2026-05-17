@@ -4,6 +4,12 @@ final class OnDeviceInsightGenerator: InsightGenerating {
 
     var isModelReady: Bool { CactusManager.shared.isReady }
 
+    private func logSensitive(_ message: @autoclosure () -> String) {
+        #if SPENDY_VERBOSE_LOGS
+        print(message())
+        #endif
+    }
+
     // MARK: - InsightGenerating
 
     func generateInsights(
@@ -43,8 +49,8 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         try await CactusManager.shared.complete(
             systemPrompt: insightSystemPrompt(isRetry: isRetry),
             userMessage: userMessage,
-            maxTokens: 2000,
-            temperature: isRetry ? 0.05 : 0.1
+            maxTokens: 1200,
+            temperature: 0.05
         )
     }
 
@@ -61,12 +67,12 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         actionPlan MUST contain movement and food objects.
         Each actionPlan object MUST contain title, recommendation, whyItMatters, targetMetric, timeframe.
         The findings array MUST contain 2 objects.
-        Each finding MUST contain 2 to 3 concrete actions.
+        Each finding MUST contain exactly 2 concrete actions.
         Do not output query_details, example_data, schema descriptions, markdown, comments, or text outside JSON.
         Do not use placeholders such as REPLACE.
         Do not use emojis.
         Use only the supplied Spending and Health values.
-        Make actions practical: what to do, why it matters, and what can change in 7 days.
+        Make actions practical and concise: what to do, why it matters, and what can change in 7 days.
         """
     }
 
@@ -103,7 +109,8 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         let health1 = health.metrics.first.map { "\($0.name): \($0.value)\($0.unit)" } ?? "Blood Sugar: 110 mg/dL"
         let health2 = health.metrics.dropFirst().first.map { "\($0.name): \($0.value)\($0.unit)" } ?? "Blood Pressure: 130/85"
 
-        print("[InsightGenerator] Prompt data: spending=\(spendingLines.isEmpty ? "none" : spendingLines); health=\(healthLines.isEmpty ? "none" : healthLines)")
+        print("[InsightGenerator] Prompt data prepared (spendingChars=\(spendingLines.count), healthChars=\(healthLines.count)).")
+        logSensitive("[InsightGenerator] Prompt data: spending=\(spendingLines.isEmpty ? "none" : spendingLines); health=\(healthLines.isEmpty ? "none" : healthLines)")
 
         return """
         TASK:
@@ -116,7 +123,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
 
         REQUIRED OUTPUT:
         Return one JSON object matching this schema exactly:
-        {"riskScore":\(suggestedRisk),"monthlyAtRisk":\(atRiskEstimate),"actionPlan":{"movement":{"title":"REPLACE movement title","recommendation":"REPLACE with specific daily walking, jogging, or cycling duration","whyItMatters":"REPLACE with may help support language tied to health metrics","targetMetric":"REPLACE metric names","timeframe":"Next 7 days"},"food":{"title":"REPLACE food title","recommendation":"REPLACE with specific delivery, fast food, sugar drink, or grocery swap target","whyItMatters":"REPLACE with helps reduce exposure language tied to health metrics","targetMetric":"REPLACE metric names","timeframe":"Next 7 days"}},"findings":[{"icon":"fork.knife","cause":"\(cat1) spending pattern","causeDetail":"REPLACE with 1 sentence about \(cat1) and health risk","healthImpact":"REPLACE with metric name","healthDetail":"REPLACE using \(health1)","risk":"REPLACE with 1 sentence consequence","accentColor":"amber","actions":[{"title":"REPLACE short action 1","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 2","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 3","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":1}]},{"icon":"moon.fill","cause":"\(cat2) spending pattern","causeDetail":"REPLACE with 1 sentence about \(cat2) and health risk","healthImpact":"REPLACE with metric name","healthDetail":"REPLACE using \(health2)","risk":"REPLACE with 1 sentence consequence","accentColor":"red","actions":[{"title":"REPLACE short action 1","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 2","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 3","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":1}]}]}
+        {"riskScore":\(suggestedRisk),"monthlyAtRisk":\(atRiskEstimate),"actionPlan":{"movement":{"title":"REPLACE movement title","recommendation":"REPLACE with daily walking, jogging, or cycling duration","whyItMatters":"REPLACE with concise may help support language tied to health metrics","targetMetric":"REPLACE metric names","timeframe":"Next 7 days"},"food":{"title":"REPLACE food title","recommendation":"REPLACE with specific delivery, fast food, sugar drink, or grocery swap target","whyItMatters":"REPLACE with concise helps reduce exposure language tied to health metrics","targetMetric":"REPLACE metric names","timeframe":"Next 7 days"}},"findings":[{"icon":"fork.knife","cause":"\(cat1) spending pattern","causeDetail":"REPLACE one sentence","healthImpact":"REPLACE metric name","healthDetail":"REPLACE using \(health1)","risk":"REPLACE one sentence","accentColor":"amber","actions":[{"title":"REPLACE short action 1","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 2","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2}]},{"icon":"moon.fill","cause":"\(cat2) spending pattern","causeDetail":"REPLACE one sentence","healthImpact":"REPLACE metric name","healthDetail":"REPLACE using \(health2)","risk":"REPLACE one sentence","accentColor":"red","actions":[{"title":"REPLACE short action 1","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 2","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2}]}]}
 
         RULES:
         Replace every REPLACE value with a concrete sentence based on DATA.
@@ -138,16 +145,18 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         The first character must be {.
         Include actionPlan.movement and actionPlan.food with title, recommendation, whyItMatters, targetMetric, timeframe.
         The top-level object must contain a non-empty findings array with exactly 2 findings.
-        Each finding must contain at least 2 actions.
+        Each finding must contain exactly 2 concise actions.
         """
     }
 
     // MARK: - Parse JSON → InsightResult
 
     private func parseInsightResult(from text: String, spending: [SpendingEntry], health: HealthReport) throws -> InsightResult {
-        print("[InsightGenerator] Raw text (\(text.count) chars): \(text.prefix(200))")
+        print("[InsightGenerator] Raw text received (\(text.count) chars).")
+        logSensitive("[InsightGenerator] Raw text preview: \(text.prefix(200))")
         let cleaned = extractJSONObject(from: text)
-        print("[InsightGenerator] Extracted JSON (\(cleaned.count) chars): \(cleaned.prefix(300))")
+        print("[InsightGenerator] Extracted JSON candidate (\(cleaned.count) chars).")
+        logSensitive("[InsightGenerator] Extracted JSON preview: \(cleaned.prefix(300))")
 
         guard
             let data = cleaned.data(using: .utf8),

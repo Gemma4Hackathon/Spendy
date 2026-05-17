@@ -25,19 +25,23 @@ struct HealthScanView: View {
     var body: some View {
         ZStack {
             SpendyTheme.background.ignoresSafeArea()
-            VStack(spacing: 0) {
-                Spacer()
-                scanIcon
-                Spacer().frame(height: 40)
-                actionButtons
-                if isProcessing || fallbackMessage != nil {
-                    Spacer().frame(height: 20)
-                    scanProgressCard
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 24)
+                    scanIcon
+                    Spacer().frame(height: 40)
+                    actionButtons
+                    if isProcessing || fallbackMessage != nil {
+                        Spacer().frame(height: 20)
+                        scanProgressCard
+                    }
+                    Spacer(minLength: 32)
+                    bottomHint
                 }
-                Spacer()
-                bottomHint
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, SpendyTheme.padding)
+                .padding(.bottom, 24)
             }
-            .padding(.horizontal, SpendyTheme.padding)
         }
         .navigationTitle("Health Scan")
         .navigationBarTitleDisplayMode(.large)
@@ -51,7 +55,7 @@ struct HealthScanView: View {
         }
         .sheet(isPresented: $showCameraPicker) {
             CameraImagePicker { data in
-                Task { await processImageData(data) }
+                Task { await processImageData(data, alreadyPrepared: true) }
             }
             .ignoresSafeArea()
         }
@@ -247,7 +251,7 @@ struct HealthScanView: View {
         }
     }
 
-    private func processImageData(_ data: Data) async {
+    private func processImageData(_ data: Data, alreadyPrepared: Bool = false) async {
         guard !isProcessing else { return }
         isProcessing = true
         defer {
@@ -257,14 +261,16 @@ struct HealthScanView: View {
         fallbackMessage = nil
         scanStage = .readingImage
 
-        appState.healthScanImageData = data
+        let preparedData = alreadyPrepared ? data : (ScanImagePreprocessor.jpegData(from: data) ?? data)
+        print("[HealthScan] Prepared image data: original=\(data.count) bytes, prepared=\(preparedData.count) bytes")
+        appState.healthScanImageData = preparedData
         do {
             if appEnvironment.route == .onDevice && !appEnvironment.canRunOnDeviceInference {
                 scanStage = .failed
                 fallbackMessage = "The local model is not ready yet. Wait for model loading to finish, then scan again."
             } else {
                 scanStage = .extractingMarkers
-                let report = try await appEnvironment.router.healthExtractor.extractHealthReport(imageData: data)
+                let report = try await appEnvironment.router.healthExtractor.extractHealthReport(imageData: preparedData)
                 scanStage = .preparingResults
                 appState.setHealthReport(report)
                 appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
@@ -332,6 +338,39 @@ struct HealthScanView: View {
     }
 }
 
+private enum ScanImagePreprocessor {
+    static func jpegData(
+        from imageData: Data,
+        maxDimension: CGFloat = 1600,
+        compressionQuality: CGFloat = 0.82
+    ) -> Data? {
+        guard let image = UIImage(data: imageData) else { return nil }
+        return jpegData(from: image, maxDimension: maxDimension, compressionQuality: compressionQuality)
+    }
+
+    static func jpegData(
+        from image: UIImage,
+        maxDimension: CGFloat = 1600,
+        compressionQuality: CGFloat = 0.82
+    ) -> Data? {
+        autoreleasepool {
+            let size = image.size
+            let longestSide = max(size.width, size.height)
+            guard longestSide > 0 else { return image.jpegData(compressionQuality: compressionQuality) }
+
+            let scale = min(1, maxDimension / longestSide)
+            let targetSize = CGSize(width: size.width * scale, height: size.height * scale)
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+            let resized = renderer.image { _ in
+                image.draw(in: CGRect(origin: .zero, size: targetSize))
+            }
+            return resized.jpegData(compressionQuality: compressionQuality)
+        }
+    }
+}
+
 private struct CameraImagePicker: UIViewControllerRepresentable {
     let onImageData: (Data) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -363,12 +402,18 @@ private struct CameraImagePicker: UIViewControllerRepresentable {
             _ picker: UIImagePickerController,
             didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
         ) {
-            defer { dismiss() }
             guard
                 let image = info[.originalImage] as? UIImage,
-                let data = image.jpegData(compressionQuality: 0.85)
-            else { return }
-            onImageData(data)
+                let data = ScanImagePreprocessor.jpegData(from: image)
+            else {
+                dismiss()
+                return
+            }
+            print("[HealthScan] Camera image prepared: \(data.count) bytes")
+            dismiss()
+            DispatchQueue.main.async {
+                self.onImageData(data)
+            }
         }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {

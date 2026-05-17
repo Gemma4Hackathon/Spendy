@@ -33,7 +33,7 @@ final class AppEnvironment {
     }
 
     var canRunOnDeviceInference: Bool {
-        route == .onDevice && onDeviceInstallState == .ready
+        route == .onDevice && onDeviceInstallState == .ready && CactusManager.shared.isReady
     }
 
     func markServiceError(_ error: Error) {

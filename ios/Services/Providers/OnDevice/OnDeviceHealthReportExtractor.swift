@@ -6,29 +6,58 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
 
     var isModelReady: Bool { CactusManager.shared.isReady }
 
+    private let preferredMinimumMetricCount = 5
+    private let longOCRTextThreshold = 1_000
+
+    private func logSensitive(_ message: @autoclosure () -> String) {
+        #if SPENDY_VERBOSE_LOGS
+        print(message())
+        #endif
+    }
+
     // MARK: - HealthReportExtracting
 
     func extractHealthReport(imageData: Data) async throws -> HealthReport {
+        var releasedModelForOCR = false
         if isModelReady {
             do {
                 print("[HealthExtractor] Trying Gemma 4 vision extraction...")
                 return try await runVisionInference(imageData: imageData)
             } catch {
-                print("[HealthExtractor] Gemma 4 vision failed, falling back to Apple Vision OCR: \(error.localizedDescription)")
+                print("[HealthExtractor] Gemma 4 vision failed. Releasing model before Apple Vision OCR: \(error.localizedDescription)")
+                await CactusManager.shared.releaseModelForMemoryPressure()
+                releasedModelForOCR = true
             }
         }
 
-        let text = try await recognizeText(from: imageData)
-        print("[HealthExtractor] OCR text (\(text.count) chars): \(text.prefix(300))")
+        let text = try await withTimeout(seconds: 8) {
+            try await self.recognizeText(from: imageData)
+        }
+        print("[HealthExtractor] OCR text recognized (\(text.count) chars).")
+        logSensitive("[HealthExtractor] OCR text preview: \(text.prefix(300))")
 
-        if let report = parseReportFromOCR(text) {
+        let directOCRReport = parseReportFromOCR(text)
+        if let report = directOCRReport,
+           shouldAcceptDirectOCRReport(report, ocrText: text) {
+            reloadModelIfNeeded(releasedModelForOCR)
             return report
+        }
+        if let report = directOCRReport {
+            print("[HealthExtractor] Direct OCR parser extracted only \(report.metrics.count) metrics from \(text.count) chars; using Gemma 4 text structuring.")
+        }
+
+        if releasedModelForOCR {
+            print("[HealthExtractor] OCR text found but direct parser failed. Reloading Gemma 4 for OCR structuring.")
+            try await reloadModelForTextInference()
+            return try await runTextInferenceWithFallback(ocrText: text, fallbackReport: directOCRReport)
         }
 
         guard isModelReady else {
             throw CactusError.modelNotLoaded
         }
-        return try await runTextInference(ocrText: text)
+        let report = try await runTextInferenceWithFallback(ocrText: text, fallbackReport: directOCRReport)
+        reloadModelIfNeeded(releasedModelForOCR)
+        return report
     }
 
     // MARK: - OCR
@@ -42,30 +71,80 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
 
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
+                let lock = NSLock()
+                var didResume = false
+                func resumeOnce(_ result: Result<String, Error>) {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !didResume else { return }
+                    didResume = true
+                    switch result {
+                    case .success(let text):
+                        continuation.resume(returning: text)
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
+                }
+
                 let request = VNRecognizeTextRequest { request, error in
                     if let error {
-                        continuation.resume(throwing: error)
+                        resumeOnce(.failure(error))
                         return
                     }
                     let observations = request.results as? [VNRecognizedTextObservation] ?? []
                     let lines = observations.compactMap { $0.topCandidates(1).first?.string }
                     let text = lines.joined(separator: "\n")
                     if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        continuation.resume(throwing: CactusError.inferenceFailure("No text was recognized in the selected image."))
+                        resumeOnce(.failure(CactusError.inferenceFailure("No text was recognized in the selected image.")))
                     } else {
-                        continuation.resume(returning: text)
+                        resumeOnce(.success(text))
                     }
                 }
                 request.recognitionLevel = .accurate
-                request.usesLanguageCorrection = true
-                request.recognitionLanguages = ["en-US", "zh-Hant", "zh-Hans"]
+                request.usesLanguageCorrection = false
+                request.recognitionLanguages = ["en-US"]
 
                 do {
                     try VNImageRequestHandler(cgImage: cgImage, options: [:]).perform([request])
                 } catch {
-                    continuation.resume(throwing: error)
+                    resumeOnce(.failure(error))
                 }
             }
+        }
+    }
+
+    private func withTimeout<T: Sendable>(
+        seconds: UInt64,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                throw CactusError.inferenceFailure("Apple Vision OCR timed out.")
+            }
+
+            guard let result = try await group.next() else {
+                throw CactusError.inferenceFailure("Apple Vision OCR did not return a result.")
+            }
+            group.cancelAll()
+            return result
+        }
+    }
+
+    private func reloadModelIfNeeded(_ shouldReload: Bool) {
+        guard shouldReload else { return }
+        Task.detached(priority: .utility) {
+            await CactusManager.shared.loadModel()
+        }
+    }
+
+    private func reloadModelForTextInference() async throws {
+        await CactusManager.shared.loadModel()
+        guard isModelReady else {
+            throw CactusError.inferenceFailure("The OCR text was read, but the local model could not be reloaded to structure it.")
         }
     }
 
@@ -73,16 +152,16 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
 
     private func runVisionInference(imageData: Data) async throws -> HealthReport {
         let systemPrompt = """
-        You are a medical data extraction assistant. \
+        You are a strict medical data extraction engine. \
         The user image is a health checkup or blood test report. \
-        Read the visible table values directly from the image. \
-        Respond ONLY with one valid JSON object. No explanation, no markdown.
+        Read only visible lab table values directly from the image. \
+        Output JSON only. Do not output markdown, headings, prose, summaries, or code fences.
         """
 
         let userMessage = """
         Extract all visible health metrics from this report image.
 
-        Return this exact JSON structure:
+        Return exactly one JSON object using this schema:
         {
           "metrics": [
             {"name":"Blood Pressure","value":"138/89","unit":"mmHg","normalRange":"< 120/80","status":"High"}
@@ -101,24 +180,116 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
 
         In evidenceTrace, write 2-5 concise patient-friendly bullets explaining which values were read and why they were flagged.
         If you cannot read the image or find no metrics, return {"metrics":[],"evidenceTrace":[]}
+
+        The first character of your response must be { and the last character must be }.
         """
 
         let rawText = try await CactusManager.shared.visionComplete(
             systemPrompt: systemPrompt,
             userMessage: userMessage,
             imageData: imageData,
-            maxTokens: 900
+            maxTokens: 1_200
         )
 
-        return try parseMetrics(from: rawText, labName: "Extracted by Gemma 4 Vision")
+        do {
+            let report = try parseMetrics(from: rawText, labName: "Extracted by Gemma 4 Vision")
+            guard reportHasPreferredCoverage(report) else {
+                print("[HealthExtractor] Gemma 4 vision extracted only \(report.metrics.count) metrics; using OCR + Gemma text structuring.")
+                return try await recoverWithOCRTextStructuring(
+                    imageData: imageData,
+                    fallbackReport: report,
+                    reason: "Gemma 4 vision returned too few metrics."
+                )
+            }
+            return report
+        } catch {
+            print("[HealthExtractor] Gemma 4 vision returned non-JSON; trying local JSON repair.")
+            let repairedReport = try await runVisionJSONRepair(visionText: rawText)
+            guard reportHasPreferredCoverage(repairedReport) else {
+                print("[HealthExtractor] Gemma 4 vision repair extracted only \(repairedReport.metrics.count) metrics; using OCR + Gemma text structuring.")
+                return try await recoverWithOCRTextStructuring(
+                    imageData: imageData,
+                    fallbackReport: repairedReport,
+                    reason: "Gemma 4 vision repair returned too few metrics."
+                )
+            }
+            return repairedReport
+        }
+    }
+
+    private func runVisionJSONRepair(visionText: String) async throws -> HealthReport {
+        let systemPrompt = """
+        You convert health report extraction text into strict JSON. \
+        Use only values explicitly present in the user text. \
+        Output JSON only. Do not output markdown, explanation, or code fences.
+        """
+
+        let userMessage = """
+        Convert the following Gemma 4 vision extraction into this exact JSON schema:
+        {
+          "metrics": [
+            {"name":"Blood Pressure","value":"138/89","unit":"mmHg","normalRange":"< 120/80","status":"High"}
+          ],
+          "evidenceTrace": [
+            "Blood Pressure 138/89 mmHg is above < 120/80, so it is flagged High."
+          ]
+        }
+
+        Rules:
+        - Keep only real health metrics with clear values and units.
+        - Ignore patient information, specimen information, client information, IDs, dates, and section numbers.
+        - If no clear metrics exist, return {"metrics":[],"evidenceTrace":[]}
+        - The first character of your response must be { and the last character must be }.
+
+        VISION EXTRACTION TEXT:
+        \(visionText)
+        """
+
+        let repairedText = try await CactusManager.shared.complete(
+            systemPrompt: systemPrompt,
+            userMessage: userMessage,
+            maxTokens: 1_400,
+            temperature: 0.05
+        )
+
+        return try parseMetrics(from: repairedText, labName: "Gemma 4 Vision + JSON Repair")
+    }
+
+    private func recoverWithOCRTextStructuring(
+        imageData: Data,
+        fallbackReport: HealthReport?,
+        reason: String
+    ) async throws -> HealthReport {
+        print("[HealthExtractor] \(reason) Releasing model before OCR recovery.")
+        await CactusManager.shared.releaseModelForMemoryPressure()
+
+        let text = try await withTimeout(seconds: 8) {
+            try await self.recognizeText(from: imageData)
+        }
+        print("[HealthExtractor] OCR recovery text recognized (\(text.count) chars).")
+        logSensitive("[HealthExtractor] OCR recovery text preview: \(text.prefix(300))")
+
+        let directOCRReport = parseReportFromOCR(text)
+        let bestFallback = betterReport(directOCRReport, fallbackReport)
+
+        if let report = directOCRReport,
+           shouldAcceptDirectOCRReport(report, ocrText: text),
+           report.metrics.count >= (fallbackReport?.metrics.count ?? 0) {
+            reloadModelIfNeeded(true)
+            return report
+        }
+
+        try await reloadModelForTextInference()
+        return try await runTextInferenceWithFallback(ocrText: text, fallbackReport: bestFallback)
     }
 
     private func runTextInference(ocrText: String) async throws -> HealthReport {
         let systemPrompt = """
         You are a medical data extraction assistant. \
-        The user message contains OCR text from a health checkup or blood test report. \
-        Extract ALL health metrics you can identify. \
-        Respond ONLY with one valid JSON object. No explanation, no markdown.
+        The user message contains noisy OCR text from a health checkup or blood test report. \
+        Extract health metrics you can identify from imperfect OCR. \
+        Do not infer missing values. Do not invent generic patient values. \
+        Respond ONLY with one valid JSON object using the requested schema. No explanation, no markdown.
         """
 
         let userMessage = """
@@ -138,6 +309,10 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         - unit (e.g. mg/dL, mmHg, %)
         - normalRange (e.g. < 100, 18.5–24, > 40)
         - status: "Normal", "Borderline", or "High"
+        - Ignore report section numbers, dates, patient IDs, phone numbers, specimen IDs, and client information.
+        - Do not return patient profile fields such as name, age, gender, weight, or height.
+        - If you are unsure whether a number belongs to a health metric, omit it.
+        - Keep only metrics that are clearly lab values or health markers.
 
         In evidenceTrace, write 2-5 concise patient-friendly bullets explaining which values were read and why they were flagged.
         If you cannot read the image or find no metrics, return {"metrics":[],"evidenceTrace":[]}
@@ -149,11 +324,30 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         let rawText = try await CactusManager.shared.complete(
             systemPrompt: systemPrompt,
             userMessage: userMessage,
-            maxTokens: 900,
+            maxTokens: 1_600,
             temperature: 0.05
         )
 
         return try parseMetrics(from: rawText, labName: "Apple Vision OCR + Gemma 4")
+    }
+
+    private func runTextInferenceWithFallback(
+        ocrText: String,
+        fallbackReport: HealthReport?
+    ) async throws -> HealthReport {
+        do {
+            let report = try await runTextInference(ocrText: ocrText)
+            if !reportHasPreferredCoverage(report) {
+                print("[HealthExtractor] Gemma 4 text structuring returned \(report.metrics.count) metrics; keeping best available report.")
+            }
+            return betterReport(report, fallbackReport) ?? report
+        } catch {
+            if let fallbackReport {
+                print("[HealthExtractor] Gemma 4 text structuring failed; returning fallback report with \(fallbackReport.metrics.count) metrics: \(error.localizedDescription)")
+                return fallbackReport
+            }
+            throw error
+        }
     }
 
     // MARK: - Parse JSON → HealthReport
@@ -223,6 +417,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         var metrics: [HealthMetric] = []
         for spec in specs {
             guard let value = firstValue(for: spec.aliases, in: normalized) else { continue }
+            guard isPlausibleMetricValue(name: spec.name, value: value) else { continue }
             let status = spec.evaluate(value)
             metrics.append(
                 HealthMetric(
@@ -274,6 +469,27 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         return .normal
     }
 
+    private func isPlausibleMetricValue(name: String, value: String) -> Bool {
+        let normalizedName = name.lowercased()
+        if normalizedName.contains("pressure") {
+            let parts = value.split(separator: "/").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            guard parts.count == 2 else { return false }
+            return (70...240).contains(parts[0]) && (40...140).contains(parts[1])
+        }
+
+        guard let number = Double(value) else { return false }
+        if normalizedName.contains("glucose") { return (40...400).contains(number) }
+        if normalizedName.contains("hba1c") { return (3...15).contains(number) }
+        if normalizedName.contains("ldl") { return (20...400).contains(number) }
+        if normalizedName.contains("hdl") { return (10...150).contains(number) }
+        if normalizedName.contains("triglyceride") { return (20...1000).contains(number) }
+        if normalizedName.contains("total cholesterol") { return (80...400).contains(number) }
+        if normalizedName.contains("bmi") { return (10...80).contains(number) }
+        if normalizedName.contains("hemoglobin") { return (50...250).contains(number) }
+        if normalizedName.contains("platelet") { return (20...1000).contains(number) }
+        return true
+    }
+
     private func progress(for status: HealthStatus) -> Double {
         switch status {
         case .warning: return 0.82
@@ -282,8 +498,33 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
     }
 
+    private func reportHasPreferredCoverage(_ report: HealthReport) -> Bool {
+        report.metrics.count >= preferredMinimumMetricCount
+    }
+
+    private func shouldAcceptDirectOCRReport(_ report: HealthReport, ocrText: String) -> Bool {
+        if ocrText.count >= longOCRTextThreshold {
+            return reportHasPreferredCoverage(report)
+        }
+        return report.metrics.count >= 2
+    }
+
+    private func betterReport(_ first: HealthReport?, _ second: HealthReport?) -> HealthReport? {
+        switch (first, second) {
+        case let (first?, second?):
+            return first.metrics.count >= second.metrics.count ? first : second
+        case let (first?, nil):
+            return first
+        case let (nil, second?):
+            return second
+        case (nil, nil):
+            return nil
+        }
+    }
+
     private func parseMetrics(from text: String, labName: String) throws -> HealthReport {
-        print("[HealthExtractor] Raw vision text (\(text.count) chars): \(text.prefix(220))")
+        print("[HealthExtractor] Raw model text received (\(text.count) chars).")
+        logSensitive("[HealthExtractor] Raw model text preview: \(text.prefix(220))")
         let cleaned = extractJSONObject(from: text)
         guard let data = cleaned.data(using: .utf8) else {
             print("[HealthExtractor] JSON parse failed: no UTF-8 data")
@@ -318,14 +559,6 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
                 }
             }()
 
-            let progress: Double = {
-                switch status {
-                case .warning:    return Double.random(in: 0.75...0.95)
-                case .borderline: return Double.random(in: 0.55...0.74)
-                case .normal:     return Double.random(in: 0.30...0.54)
-                }
-            }()
-
             return HealthMetric(
                 name:        name,
                 value:       value,
@@ -333,7 +566,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
                 normalRange: normalRange,
                 status:      status,
                 icon:        iconForMetric(name: name),
-                progress:    progress
+                progress:    progress(for: status)
             )
         }
 
@@ -352,6 +585,14 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
     // MARK: - Helpers
 
     private typealias MetricDictionary = [String: Any]
+
+    private struct FlatMetricSpec {
+        let keys: [String]
+        let name: String
+        let unit: String
+        let normalRange: String
+        let evaluate: (String) -> HealthStatus
+    }
 
     private func parseHealthPayload(_ object: Any) -> (metricDictionaries: [MetricDictionary], evidenceTrace: [String]) {
         if let dict = object as? [String: Any] {
@@ -395,11 +636,98 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
                   let typed = nested["metrics"] as? [[String: Any]] {
             metrics = typed
         } else {
-            metrics = []
+            metrics = metricsFromFlatPayload(dict)
         }
 
         let evidenceTrace = stringArray(dict["evidenceTrace"] ?? dict["reasoningTrace"] ?? dict["trace"])
         return (metrics, evidenceTrace)
+    }
+
+    private func metricsFromFlatPayload(_ dict: [String: Any]) -> [MetricDictionary] {
+        let specs: [FlatMetricSpec] = [
+            FlatMetricSpec(keys: ["blood_pressure", "bloodPressure", "bp"], name: "Blood Pressure", unit: "mmHg", normalRange: "< 120/80") { value in
+                let parts = value.split(separator: "/").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                guard parts.count == 2 else { return .normal }
+                if parts[0] >= 130 || parts[1] >= 80 { return .warning }
+                if parts[0] >= 120 { return .borderline }
+                return .normal
+            },
+            FlatMetricSpec(keys: ["fasting_glucose", "fastingGlucose", "glucose", "blood_glucose"], name: "Fasting Glucose", unit: "mg/dL", normalRange: "< 100") { value in
+                self.evaluateNumeric(value, normalHigh: 100, borderlineHigh: 110)
+            },
+            FlatMetricSpec(keys: ["hba1c", "a1c", "hemoglobin_a1c"], name: "HbA1c", unit: "%", normalRange: "< 5.7") { value in
+                self.evaluateNumeric(value, normalHigh: 5.7, borderlineHigh: 6.0)
+            },
+            FlatMetricSpec(keys: ["cholesterol_total", "total_cholesterol", "totalCholesterol", "cholesterol"], name: "Total Cholesterol", unit: "mg/dL", normalRange: "< 200") { value in
+                self.evaluateNumeric(value, normalHigh: 200, borderlineHigh: 240)
+            },
+            FlatMetricSpec(keys: ["ldl", "ldl_cholesterol", "ldlCholesterol"], name: "LDL Cholesterol", unit: "mg/dL", normalRange: "< 130") { value in
+                self.evaluateNumeric(value, normalHigh: 130, borderlineHigh: 160)
+            },
+            FlatMetricSpec(keys: ["hdl", "hdl_cholesterol", "hdlCholesterol"], name: "HDL Cholesterol", unit: "mg/dL", normalRange: "> 40") { value in
+                guard let number = Double(self.numericString(from: value)) else { return .normal }
+                return number < 40 ? .borderline : .normal
+            },
+            FlatMetricSpec(keys: ["triglycerides", "tg"], name: "Triglycerides", unit: "mg/dL", normalRange: "< 150") { value in
+                self.evaluateNumeric(value, normalHigh: 150, borderlineHigh: 200)
+            },
+            FlatMetricSpec(keys: ["bmi", "body_mass_index", "bodyMassIndex"], name: "BMI", unit: "", normalRange: "18.5-24") { value in
+                guard let number = Double(self.numericString(from: value)) else { return .normal }
+                if number >= 27 { return .warning }
+                if number >= 24 || number < 18.5 { return .borderline }
+                return .normal
+            },
+            FlatMetricSpec(keys: ["hemoglobin", "hb"], name: "Hemoglobin", unit: "g/L", normalRange: "135-165") { value in
+                guard let number = Double(self.numericString(from: value)) else { return .normal }
+                if number < 120 || number > 175 { return .warning }
+                if number < 135 || number > 165 { return .borderline }
+                return .normal
+            },
+            FlatMetricSpec(keys: ["platelets", "plt"], name: "Platelets", unit: "10^9/L", normalRange: "150-400") { value in
+                guard let number = Double(self.numericString(from: value)) else { return .normal }
+                if number < 100 || number > 450 { return .warning }
+                if number < 150 || number > 400 { return .borderline }
+                return .normal
+            }
+        ]
+
+        let lowercasedKeys = Dictionary(uniqueKeysWithValues: dict.keys.map { ($0.lowercased(), $0) })
+        return specs.compactMap { spec in
+            guard let sourceKey = spec.keys.compactMap({ lowercasedKeys[$0.lowercased()] }).first,
+                  let rawValue = stringValue(dict[sourceKey])
+            else { return nil }
+
+            let extractedValue = metricValue(from: rawValue)
+            guard isPlausibleMetricValue(name: spec.name, value: extractedValue) else { return nil }
+            let status = spec.evaluate(extractedValue)
+            return [
+                "name": spec.name,
+                "value": extractedValue,
+                "unit": unitValue(from: rawValue) ?? spec.unit,
+                "normalRange": spec.normalRange,
+                "status": status.rawValue
+            ]
+        }
+    }
+
+    private func metricValue(from rawValue: String) -> String {
+        let cleaned = rawValue
+            .replacingOccurrences(of: ",", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let pressure = firstMatch(pattern: #"(\d{2,3}\s*/\s*\d{2,3})"#, in: cleaned) {
+            return pressure.replacingOccurrences(of: " ", with: "")
+        }
+        return numericString(from: cleaned)
+    }
+
+    private func numericString(from rawValue: String) -> String {
+        firstMatch(pattern: #"(-?\d{1,4}(?:\.\d+)?)"#, in: rawValue) ?? rawValue
+    }
+
+    private func unitValue(from rawValue: String) -> String? {
+        let units = ["mg/dL", "mmHg", "%", "g/L", "g/dL", "kg/m2", "10^9/L"]
+        return units.first { rawValue.localizedCaseInsensitiveContains($0) }
     }
 
     private func stringValue(_ value: Any?) -> String? {
