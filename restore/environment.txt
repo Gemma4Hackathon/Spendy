@@ -1,0 +1,126 @@
+# Environment snapshot taken 2026-10-03 from the working setup that produced the original INT4 model (2026-05-14)
+
+## Repos
+cactus repo:      https://github.com/cactus-compute/cactus.git
+cactus commit:    d917981f4a4658719420353c2dfffeca30201a7f
+cactus local mod: restore/cactus-d917981f.patch (apply on top of the commit above)
+Spendy commit at snapshot: 000e7cb24ad3a468576756c4f774074f4da11d74
+
+## Hugging Face sources
+base model:   google/gemma-4-E2B-it   (HEAD at snapshot 3e22461f, updated 2026-07-20; latest commit before the original conversion was b324173c, 2026-05-07)
+LoRA adapter: EddieTsai123/gemma_4_e2b_lora  (sha 3fcddb72dd1f7b042d1ed393ebea248aa778a019, last modified 2026-05-13)
+
+## Python (cactus/venv)
+python 3.12.10  (Homebrew python@3.12)
+transformers 5.8.0.dev0 @ git commit 2ad5a9b8d4021776cc0e938efdfb66e219b68543
+accelerate==1.13.0
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.5
+aiosignal==1.4.0
+alembic==1.18.4
+annotated_doc==0.0.4
+anyio==4.13.0
+asteroid_filterbanks==0.4.0
+attrs==26.1.0
+cactus==0.1.0
+certifi==2026.4.22
+charset_normalizer==3.4.7
+click==8.3.3
+colorlog==6.10.1
+contourpy==1.3.3
+cycler==0.12.1
+docopt==0.6.2
+einops==0.8.2
+filelock==3.29.0
+fonttools==4.62.1
+frozenlist==1.8.0
+fsspec==2026.4.0
+googleapis_common_protos==1.75.0
+grpcio==1.80.0
+h11==0.16.0
+hf_xet==1.5.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.14.0
+idna==3.14
+importlib_metadata==8.7.1
+jinja2==3.1.6
+joblib==1.5.3
+julius==0.2.7
+kiwisolver==1.5.0
+lightning==2.6.1
+lightning_utilities==0.15.3
+mako==1.3.12
+markdown_it_py==4.2.0
+markupsafe==3.0.3
+matplotlib==3.10.9
+mdurl==0.1.2
+mpmath==1.3.0
+multidict==6.7.1
+networkx==3.6.1
+num2words==0.5.12
+numpy==2.4.4
+opentelemetry_api==1.41.1
+opentelemetry_exporter_otlp==1.41.1
+opentelemetry_exporter_otlp_proto_common==1.41.1
+opentelemetry_exporter_otlp_proto_grpc==1.41.1
+opentelemetry_exporter_otlp_proto_http==1.41.1
+opentelemetry_proto==1.41.1
+opentelemetry_sdk==1.41.1
+opentelemetry_semantic_conventions==0.62b1
+optuna==4.8.0
+packaging==26.2
+pandas==3.0.2
+peft==0.19.1
+pillow==11.3.0
+pip==26.1.1
+primePy==1.3
+propcache==0.5.2
+protobuf==6.33.6
+psutil==7.2.2
+pyannoteai_sdk==0.4.0
+pyannote_audio==4.0.4
+pyannote_core==6.0.1
+pyannote_database==6.1.1
+pyannote_metrics==4.1
+pyannote_pipeline==4.0.0
+pygments==2.20.0
+pyparsing==3.3.2
+python_dateutil==2.9.0.post0
+pytorch_lightning==2.6.1
+pytorch_metric_learning==2.9.0
+pyyaml==6.0.3
+regex==2026.5.9
+requests==2.33.1
+rich==15.0.0
+safetensors==0.7.0
+scikit_learn==1.8.0
+scipy==1.17.1
+sentencepiece==0.2.1
+setuptools==82.0.1
+shellingham==1.5.4
+six==1.17.0
+sortedcontainers==2.4.0
+sqlalchemy==2.0.49
+sympy==1.14.0
+threadpoolctl==3.6.0
+timm==1.0.25
+tokenizers==0.22.2
+torch==2.8.0
+torchaudio==2.8.0
+torchcodec==0.11.1
+torchmetrics==1.9.0
+torchvision==0.23.0
+torch_audiomentations==0.12.0
+torch_pitch_shift==1.2.5
+tqdm==4.67.3
+typer==0.25.1
+typer_slim==0.24.0
+typing_extensions==4.15.0
+urllib3==2.7.0
+yarl==1.23.0
+zipp==3.23.1
+
+## Build tools
+CMake 4.3.2 (from Gemma4Good/build/CMakeFiles)
+Xcode: not recorded (Xcode was removed before this snapshot). Spendy needs an Xcode with the iOS 26.4 SDK.

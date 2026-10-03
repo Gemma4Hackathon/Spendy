@@ -1,0 +1,315 @@
+diff --git a/python/src/cli.py b/python/src/cli.py
+index be47370c..ee001aa0 100644
+--- a/python/src/cli.py
++++ b/python/src/cli.py
+@@ -1707,6 +1707,7 @@ def merge_lora_adapter(base_model_id, lora_path, cache_dir=None, token=None):
+         print("Install with: pip install peft")
+         return None, None
+ 
++    import torch
+     from transformers import AutoModelForCausalLM, AutoTokenizer
+ 
+     print_color(YELLOW, f"Loading base model: {base_model_id}")
+@@ -1715,17 +1716,21 @@ def merge_lora_adapter(base_model_id, lora_path, cache_dir=None, token=None):
+         cache_dir=cache_dir,
+         trust_remote_code=True,
+         dtype=torch.bfloat16,
+-        token=token
++        token=token,
++        low_cpu_mem_usage=True,
+     )
++    print_color(YELLOW, "Base model loaded.")
+     tokenizer = AutoTokenizer.from_pretrained(
+         base_model_id,
+         cache_dir=cache_dir,
+         trust_remote_code=True,
+         token=token
+     )
++    print_color(YELLOW, "Tokenizer loaded.")
+ 
+     print_color(YELLOW, f"Loading LoRA adapter: {lora_path}")
+     model = PeftModel.from_pretrained(base_model, lora_path, token=token)
++    print_color(YELLOW, "LoRA adapter loaded.")
+ 
+     print_color(YELLOW, "Merging LoRA weights into base model...")
+     merged_model = model.merge_and_unload()
+@@ -1736,8 +1741,6 @@ def merge_lora_adapter(base_model_id, lora_path, cache_dir=None, token=None):
+ 
+ def cmd_convert(args):
+     """Convert a HuggingFace model to a custom output directory."""
+-    import tempfile
+-
+     model_id = args.model_name
+     output_dir = args.output_dir
+     lora_path = getattr(args, 'lora', None)
+@@ -1753,25 +1756,47 @@ def cmd_convert(args):
+     temp_merged_dir = None
+ 
+     if lora_path:
++        from .converter import convert_hf_model_weights
++        from .tokenizer import convert_hf_tokenizer
++        from .tensor_io import format_config_value
++        import torch
++
+         merged_model, tokenizer = merge_lora_adapter(model_id, lora_path, cache_dir, token)
+         if merged_model is None:
+             return 1
+ 
+-        temp_merged_dir = tempfile.mkdtemp(prefix="cactus_lora_merged_")
+-        print_color(YELLOW, f"Saving merged model to temp directory: {temp_merged_dir}")
+-        merged_model.save_pretrained(temp_merged_dir)
+-        tokenizer.save_pretrained(temp_merged_dir)
++        output_dir.mkdir(parents=True, exist_ok=True)
++        precision = args.precision
++        print_color(YELLOW, f"Converting merged LoRA model directly to {output_dir}...")
++        config = convert_hf_model_weights(merged_model, output_dir, precision, args)
++        del merged_model
+ 
+-        lora_tok_config = Path(lora_path) / "tokenizer_config.json"
+-        if lora_tok_config.exists():
+-            shutil.copy2(lora_tok_config, Path(temp_merged_dir) / "tokenizer_config.json")
++        config.setdefault('model_variant', 'default')
++        if precision in ('INT8', 'INT4'):
++            config['precision'] = "FP16"
++        else:
++            config['precision'] = precision
++        config['quantization'] = precision
+ 
+-        del merged_model
+-        import torch
++        config_path = output_dir / "config.txt"
++        with open(config_path, 'w') as f:
++            for key, value in config.items():
++                f.write(f"{key}={format_config_value(value)}\n")
++
++        convert_hf_tokenizer(
++            tokenizer,
++            output_dir,
++            token=token,
++            model_id=model_id,
++            model_type=config.get('model_type'),
++        )
++
++        del tokenizer
+         if torch.cuda.is_available():
+             torch.cuda.empty_cache()
+ 
+-        model_id = temp_merged_dir
++        print_color(GREEN, f"Successfully converted merged LoRA weights to {output_dir}")
++        return 0
+ 
+     class DownloadArgs:
+         pass
+diff --git a/tests/ios/CactusTest/CactusTest/AppDelegate.mm b/tests/ios/CactusTest/CactusTest/AppDelegate.mm
+index 67cd7324..08eaa61b 100644
+--- a/tests/ios/CactusTest/CactusTest/AppDelegate.mm
++++ b/tests/ios/CactusTest/CactusTest/AppDelegate.mm
+@@ -11,27 +11,7 @@
+ #include <string>
+ #include <vector>
+ 
+-extern int test_audio_chat_pcm_main();
+-extern int test_audio_cosine_main();
+-extern int test_curl_main();
+-extern int test_embed_main();
+-extern int test_exhaustive_main();
+-extern int test_gemma4_audio_main();
+-extern int test_gemma4_audio_layers_main();
+-extern int test_gemma4_suite_main();
+-extern int test_gemma4_thinking_main();
+-extern int test_gemma4_vision_main();
+-extern int test_graph_main();
+-extern int test_index_main();
+-extern int test_kernel_main();
+-extern int test_kv_cache_main();
+ extern int test_llm_main();
+-extern int test_model_loading_main();
+-extern int test_performance_main();
+-extern int test_rag_main();
+-extern int test_stt_main();
+-extern int test_telemetry_main();
+-extern int test_vlm_main();
+ 
+ static void asr_token_callback(const char* token, uint32_t, void*) {
+     if (!token) return;
+@@ -72,24 +52,36 @@ static void asr_token_callback(const char* token, uint32_t, void*) {
+ - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+     NSString *documentsDirectory = paths[0];
+-    chdir([documentsDirectory UTF8String]);
++    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
++    const char* launchOnly = getenv("CACTUS_TEST_ONLY");
++    bool runFromBundle = launchOnly && std::string(launchOnly) == "llm";
++    chdir(runFromBundle ? [bundlePath UTF8String] : [documentsDirectory UTF8String]);
+ 
+ #if !TARGET_OS_SIMULATOR
+-    freopen("cactus_test.log", "w", stdout);
+-    freopen("cactus_test.log", "a", stderr);
++    NSString *logPath = [documentsDirectory stringByAppendingPathComponent:@"cactus_test.log"];
++    freopen([logPath UTF8String], "w", stdout);
++    freopen([logPath UTF8String], "a", stderr);
+     setbuf(stdout, NULL);
+     setbuf(stderr, NULL);
+ #endif
+ 
++    fprintf(stderr, "[CactusTest] started\n");
++    fprintf(stderr, "[CactusTest] CACTUS_TEST_MODEL=%s\n", getenv("CACTUS_TEST_MODEL") ?: "(null)");
++    fprintf(stderr, "[CactusTest] CACTUS_TEST_ONLY=%s\n", getenv("CACTUS_TEST_ONLY") ?: "(null)");
++    fprintf(stderr, "[CactusTest] cwd=%s\n", getcwd(nullptr, 0));
++
+     cactus::Logger::instance().set_level(cactus::LogLevel::WARN);
+ 
+-    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+-    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_MODEL")];
+-    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_TRANSCRIBE_MODEL")];
+-    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_WHISPER_MODEL")];
+-    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_VAD_MODEL")];
+-    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_ASSETS")];
+-    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_ASR_AUDIO_FILE")];
++    if (runFromBundle) {
++        fprintf(stderr, "[CactusTest] using bundled resources directly\n");
++    } else {
++        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_MODEL")];
++        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_TRANSCRIBE_MODEL")];
++        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_WHISPER_MODEL")];
++        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_VAD_MODEL")];
++        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_ASSETS")];
++        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_ASR_AUDIO_FILE")];
++    }
+ 
+     const char* run_asr = getenv("CACTUS_RUN_ASR");
+     if (run_asr && run_asr[0] == '1') {
+@@ -169,34 +161,14 @@ static void asr_token_callback(const char* token, uint32_t, void*) {
+         return YES;
+     }
+ 
+-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
++    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+         const char* only = getenv("CACTUS_TEST_ONLY");
+         std::string filter = (only && only[0]) ? std::string(only) : "";
+         auto should_run = [&](const char* name) {
+             return filter.empty() || filter == name;
+         };
+ 
+-        if (should_run("audio_chat_pcm")) test_audio_chat_pcm_main();
+-        if (should_run("audio_cosine")) test_audio_cosine_main();
+-        if (should_run("curl")) test_curl_main();
+-        if (should_run("embed")) test_embed_main();
+-        if (should_run("exhaustive")) test_exhaustive_main();
+-        if (should_run("gemma4_audio")) test_gemma4_audio_main();
+-        if (should_run("gemma4_audio_layers")) test_gemma4_audio_layers_main();
+-        if (should_run("gemma4_suite")) test_gemma4_suite_main();
+-        if (should_run("gemma4_thinking")) test_gemma4_thinking_main();
+-        if (should_run("gemma4_vision")) test_gemma4_vision_main();
+-        if (should_run("graph")) test_graph_main();
+-        if (should_run("index")) test_index_main();
+-        if (should_run("kernel")) test_kernel_main();
+-        if (should_run("kv_cache")) test_kv_cache_main();
+         if (should_run("llm")) test_llm_main();
+-        if (should_run("model_loading")) test_model_loading_main();
+-        if (should_run("performance")) test_performance_main();
+-        if (should_run("rag")) test_rag_main();
+-        if (should_run("stt")) test_stt_main();
+-        if (should_run("telemetry")) test_telemetry_main();
+-        if (should_run("vlm")) test_vlm_main();
+         exit(0);
+     });
+ 
+diff --git a/tests/ios/configure_xcode.rb b/tests/ios/configure_xcode.rb
+index e839e9fc..69b58ef4 100755
+--- a/tests/ios/configure_xcode.rb
++++ b/tests/ios/configure_xcode.rb
+@@ -77,24 +77,36 @@ def generate_app_delegate(output_path, test_files)
+     - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+         NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+         NSString *documentsDirectory = paths[0];
+-        chdir([documentsDirectory UTF8String]);
++        NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
++        const char* launchOnly = getenv("CACTUS_TEST_ONLY");
++        bool runFromBundle = launchOnly && std::string(launchOnly) == "llm";
++        chdir(runFromBundle ? [bundlePath UTF8String] : [documentsDirectory UTF8String]);
+ 
+     #if !TARGET_OS_SIMULATOR
+-        freopen("cactus_test.log", "w", stdout);
+-        freopen("cactus_test.log", "a", stderr);
++        NSString *logPath = [documentsDirectory stringByAppendingPathComponent:@"cactus_test.log"];
++        freopen([logPath UTF8String], "w", stdout);
++        freopen([logPath UTF8String], "a", stderr);
+         setbuf(stdout, NULL);
+         setbuf(stderr, NULL);
+     #endif
+ 
++        fprintf(stderr, "[CactusTest] started\\n");
++        fprintf(stderr, "[CactusTest] CACTUS_TEST_MODEL=%s\\n", getenv("CACTUS_TEST_MODEL") ?: "(null)");
++        fprintf(stderr, "[CactusTest] CACTUS_TEST_ONLY=%s\\n", getenv("CACTUS_TEST_ONLY") ?: "(null)");
++        fprintf(stderr, "[CactusTest] cwd=%s\\n", getcwd(nullptr, 0));
++
+         cactus::Logger::instance().set_level(cactus::LogLevel::#{level});
+ 
+-        NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+-        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_MODEL")];
+-        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_TRANSCRIBE_MODEL")];
+-        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_WHISPER_MODEL")];
+-        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_VAD_MODEL")];
+-        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_ASSETS")];
+-        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_ASR_AUDIO_FILE")];
++        if (runFromBundle) {
++            fprintf(stderr, "[CactusTest] using bundled resources directly\\n");
++        } else {
++            [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_MODEL")];
++            [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_TRANSCRIBE_MODEL")];
++            [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_WHISPER_MODEL")];
++            [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_VAD_MODEL")];
++            [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_ASSETS")];
++            [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_ASR_AUDIO_FILE")];
++        }
+ 
+         const char* run_asr = getenv("CACTUS_RUN_ASR");
+         if (run_asr && run_asr[0] == '1') {
+@@ -174,7 +186,7 @@ def generate_app_delegate(output_path, test_files)
+             return YES;
+         }
+ 
+-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
++        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+             const char* only = getenv("CACTUS_TEST_ONLY");
+             std::string filter = (only && only[0]) ? std::string(only) : "";
+             auto should_run = [&](const char* name) {
+@@ -217,11 +229,18 @@ tests_group = project.main_group.find_subpath('Tests', true)
+ tests_group.set_path(tests_root)
+ tests_group.set_source_tree('<absolute>')
+ 
++test_filter = ENV['CACTUS_TEST_ONLY'].to_s
++
+ discovered_test_files = Dir.glob(File.join(tests_root, 'test_*.cpp'))
+   .reject { |f| File.basename(f) == 'test_utils.cpp' }
+   .sort
+   .map { |f| File.basename(f) }
+ 
++unless test_filter.empty?
++  filtered_name = "test_#{test_filter}.cpp"
++  discovered_test_files = discovered_test_files.select { |f| f == filtered_name }
++end
++
+ puts "Discovered #{discovered_test_files.length} test file(s):"
+ discovered_test_files.each { |f| puts "  - #{f}" }
+ 
+diff --git a/tests/ios/run.sh b/tests/ios/run.sh
+index 4c6fa87e..146c5cdc 100755
+--- a/tests/ios/run.sh
++++ b/tests/ios/run.sh
+@@ -196,9 +196,13 @@ bundle_id="com.cactus.test.${USER}"
+ echo "Using Bundle ID: $bundle_id"
+ 
+ if [ "$device_type" = "device" ]; then
+-    development_team=$(security find-certificate -a -c "Apple Development" -p "$HOME/Library/Keychains/login.keychain-db" | openssl x509 -noout -subject | grep -oE 'OU=[A-Z0-9]{10}' | head -1 | cut -d= -f2)
++    development_team="${DEVELOPMENT_TEAM:-}"
++    if [ -z "$development_team" ]; then
++        development_team=$(security find-certificate -a -c "Apple Development" -p "$HOME/Library/Keychains/login.keychain-db" | openssl x509 -noout -subject | grep -oE 'OU=[A-Z0-9]{10}' | head -1 | cut -d= -f2)
++    fi
+     if [ -z "$development_team" ]; then
+         echo "Could not extract Team ID from certificate"
++        echo "Set it manually, for example: DEVELOPMENT_TEAM=YOURTEAMID cactus test --model ... --ios --llm"
+         exit 1
+     fi
+     echo "Using Team ID: $development_team"
