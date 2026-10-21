@@ -22,7 +22,15 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             throw CactusError.modelNotLoaded
         }
         print("[InsightGenerator] Starting on-device inference...")
-        return try await runInference(profile: profile, spending: spending, health: health)
+        let scope = PerfScope.begin("insight_generation")
+        do {
+            let result = try await runInference(profile: profile, spending: spending, health: health)
+            scope.end("result=ok")
+            return result
+        } catch {
+            scope.end("result=error")
+            throw error
+        }
     }
 
     // MARK: - Inference

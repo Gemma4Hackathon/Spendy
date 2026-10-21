@@ -24,12 +24,14 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             )
         }
 
+        let scope = PerfScope.begin("finance_summary", extra: "entries=\(entries.count)")
         do {
             let insight = try await runInference(
                 entries: entries,
                 breakdown: breakdown,
                 total: total
             )
+            scope.end("result=ok")
             return FinanceSummary(
                 totalSpent: total,
                 topCategory: top,
@@ -42,6 +44,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
                 insightItems: insight.items
             )
         } catch {
+            scope.end("result=error")
             return FinanceSummary(
                 totalSpent: total,
                 topCategory: top,

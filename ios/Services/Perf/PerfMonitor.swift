@@ -1,0 +1,236 @@
+import Foundation
+import os
+
+// MARK: - PerfMonitor
+// Measurement-only instrumentation. Nothing in here changes app behavior:
+// it reads clocks and memory counters, prints one-line "[PERF]" records to the
+// console, and emits os_signpost intervals so Instruments timelines line up.
+//
+// Console format (one record per line, greppable):
+//   [PERF] event=<name> key=value key=value ...
+//
+// Value logging (extracted metric names/values) is OFF by default because it can
+// contain health data. Enable it per run by adding the launch argument
+// `-SpendyPerfVerbose` in the Xcode scheme (Run > Arguments).
+
+final class PerfMonitor: @unchecked Sendable {
+
+    static let shared = PerfMonitor()
+
+    static let signposter = OSSignposter(subsystem: "com.gemma4good.Spendy", category: "Perf")
+
+    /// True when the app was launched with `-SpendyPerfVerbose`.
+    static let verbose: Bool = ProcessInfo.processInfo.arguments.contains("-SpendyPerfVerbose")
+
+    private let lock = NSLock()
+
+    // Cumulative counters since launch. Scopes report deltas.
+    private(set) var inferenceCount = 0
+    private(set) var visionInferenceCount = 0
+    private(set) var modelLoadCount = 0
+    private(set) var modelReleaseCount = 0
+
+    // Peak / minimum trackers for active scopes, keyed by scope id.
+    private var activePeaks: [UUID: (peakFootprint: UInt64, minAvailable: Int)] = [:]
+    private var sampler: DispatchSourceTimer?
+    private let samplerQueue = DispatchQueue(label: "Spendy.PerfMonitor.sampler", qos: .utility)
+
+    /// Sampling period for peak-memory tracking while any scope is active.
+    private let sampleIntervalMs = 100
+
+    private init() {}
+
+    // MARK: Counters
+
+    func noteInference(vision: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        inferenceCount += 1
+        if vision { visionInferenceCount += 1 }
+    }
+
+    func noteModelLoad() {
+        lock.lock(); defer { lock.unlock() }
+        modelLoadCount += 1
+    }
+
+    func noteModelRelease() {
+        lock.lock(); defer { lock.unlock() }
+        modelReleaseCount += 1
+    }
+
+    struct CounterSnapshot {
+        let inferences: Int
+        let visionInferences: Int
+        let modelLoads: Int
+        let modelReleases: Int
+    }
+
+    func counters() -> CounterSnapshot {
+        lock.lock(); defer { lock.unlock() }
+        return CounterSnapshot(
+            inferences: inferenceCount,
+            visionInferences: visionInferenceCount,
+            modelLoads: modelLoadCount,
+            modelReleases: modelReleaseCount
+        )
+    }
+
+    // MARK: Peak tracking
+
+    fileprivate func startTracking(_ id: UUID) {
+        let footprint = PerfMonitor.physFootprintBytes()
+        let available = PerfMonitor.availableMemoryBytes()
+        lock.lock()
+        activePeaks[id] = (peakFootprint: footprint, minAvailable: available)
+        let needsSampler = sampler == nil
+        lock.unlock()
+        if needsSampler { startSampler() }
+    }
+
+    fileprivate func stopTracking(_ id: UUID) -> (peakFootprint: UInt64, minAvailable: Int) {
+        sampleNow()
+        lock.lock()
+        let result = activePeaks.removeValue(forKey: id) ?? (peakFootprint: 0, minAvailable: 0)
+        let shouldStop = activePeaks.isEmpty
+        let timer = shouldStop ? sampler : nil
+        if shouldStop { sampler = nil }
+        lock.unlock()
+        timer?.cancel()
+        return result
+    }
+
+    private func startSampler() {
+        let timer = DispatchSource.makeTimerSource(queue: samplerQueue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(sampleIntervalMs))
+        timer.setEventHandler { [weak self] in self?.sampleNow() }
+        lock.lock()
+        if sampler == nil {
+            sampler = timer
+            lock.unlock()
+            timer.resume()
+        } else {
+            lock.unlock()
+        }
+    }
+
+    private func sampleNow() {
+        let footprint = PerfMonitor.physFootprintBytes()
+        let available = PerfMonitor.availableMemoryBytes()
+        lock.lock()
+        for (key, value) in activePeaks {
+            activePeaks[key] = (peakFootprint: max(value.peakFootprint, footprint), minAvailable: min(value.minAvailable, available))
+        }
+        lock.unlock()
+    }
+
+    // MARK: Memory readings
+
+    /// Physical footprint of this process (the number jetsam evaluates), in bytes.
+    static func physFootprintBytes() -> UInt64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return kr == KERN_SUCCESS ? info.phys_footprint : 0
+    }
+
+    /// Bytes this process can still allocate before hitting its jetsam limit.
+    static func availableMemoryBytes() -> Int {
+        Int(os_proc_available_memory())
+    }
+
+    static func mb<T: BinaryInteger>(_ bytes: T) -> String {
+        String(format: "%.1f", Double(bytes) / 1_048_576.0)
+    }
+
+    static func ms(since start: UInt64) -> String {
+        let elapsedNs = DispatchTime.now().uptimeNanoseconds &- start
+        return String(format: "%.1f", Double(elapsedNs) / 1_000_000.0)
+    }
+
+    // MARK: Logging
+
+    static func log(_ event: String, _ fields: String = "") {
+        let footprint = mb(physFootprintBytes())
+        let available = mb(max(availableMemoryBytes(), 0))
+        let tail = fields.isEmpty ? "" : " \(fields)"
+        print("[PERF] event=\(event)\(tail) footprint_mb=\(footprint) available_mb=\(available)")
+    }
+
+    /// Parses the timing fields Cactus already returns in its JSON envelope
+    /// and returns them as a "key=value" string. Read-only; never alters the response.
+    static func cactusMetrics(from raw: String) -> String {
+        guard let data = raw.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return "cactus_json=unparsed" }
+
+        func number(_ key: String) -> String {
+            if let n = dict[key] as? NSNumber { return n.stringValue }
+            return "na"
+        }
+        let responseChars = (dict["response"] as? String)?.count ?? -1
+        let thinkingChars = (dict["thinking"] as? String)?.count ?? 0
+        let success = (dict["success"] as? Bool).map { $0 ? "true" : "false" } ?? "na"
+
+        return [
+            "success=\(success)",
+            "ttft_ms=\(number("time_to_first_token_ms"))",
+            "cactus_total_ms=\(number("total_time_ms"))",
+            "prefill_tps=\(number("prefill_tps"))",
+            "decode_tps=\(number("decode_tps"))",
+            "prefill_tokens=\(number("prefill_tokens"))",
+            "decode_tokens=\(number("decode_tokens"))",
+            "cactus_ram_mb=\(number("ram_usage_mb"))",
+            "response_chars=\(responseChars)",
+            "thinking_chars=\(thinkingChars)"
+        ].joined(separator: " ")
+    }
+}
+
+// MARK: - PerfScope
+// Times one user-visible operation (a health scan, an insight generation, ...)
+// and reports how many inferences / model loads / releases happened inside it,
+// plus the peak footprint and lowest jetsam headroom sampled during it.
+
+final class PerfScope: @unchecked Sendable {
+    private let name: String
+    private let id = UUID()
+    private let start = DispatchTime.now().uptimeNanoseconds
+    private let startCounters: PerfMonitor.CounterSnapshot
+    private let signpostState: OSSignpostIntervalState
+    private var ended = false
+
+    private init(name: String, extra: String) {
+        self.name = name
+        self.startCounters = PerfMonitor.shared.counters()
+        self.signpostState = PerfMonitor.signposter.beginInterval("Scope", id: PerfMonitor.signposter.makeSignpostID(), "\(name, privacy: .public)")
+        PerfMonitor.shared.startTracking(id)
+        PerfMonitor.log("\(name)_begin", extra)
+    }
+
+    static func begin(_ name: String, extra: String = "") -> PerfScope {
+        PerfScope(name: name, extra: extra)
+    }
+
+    func end(_ extra: String = "") {
+        guard !ended else { return }
+        ended = true
+        let peaks = PerfMonitor.shared.stopTracking(id)
+        let now = PerfMonitor.shared.counters()
+        PerfMonitor.signposter.endInterval("Scope", signpostState)
+        let fields = [
+            "total_ms=\(PerfMonitor.ms(since: start))",
+            "inferences=\(now.inferences - startCounters.inferences)",
+            "vision_inferences=\(now.visionInferences - startCounters.visionInferences)",
+            "model_loads=\(now.modelLoads - startCounters.modelLoads)",
+            "model_releases=\(now.modelReleases - startCounters.modelReleases)",
+            "peak_footprint_mb=\(PerfMonitor.mb(peaks.peakFootprint))",
+            "min_available_mb=\(PerfMonitor.mb(max(peaks.minAvailable, 0)))",
+            extra
+        ].filter { !$0.isEmpty }.joined(separator: " ")
+        PerfMonitor.log("\(name)_end", fields)
+    }
+}

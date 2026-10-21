@@ -62,12 +62,22 @@ final class CactusManager {
             print("[CactusManager] Model path resolved: \(path)")
 
             // Run blocking cactusInit on the same serial Cactus queue used for inference.
-            let handle: CactusModelT = try await runOnInferenceQueue {
-                print("[CactusManager] cactusInit starting...")
-                let h = try cactusInit(path, nil, false)
-                print("[CactusManager] cactusInit complete.")
-                return h
+            // [PERF] model_load scope includes waiting for the serial inference queue.
+            let loadScope = PerfScope.begin("model_load")
+            let handle: CactusModelT
+            do {
+                handle = try await runOnInferenceQueue {
+                    print("[CactusManager] cactusInit starting...")
+                    let h = try cactusInit(path, nil, false)
+                    print("[CactusManager] cactusInit complete.")
+                    return h
+                }
+            } catch {
+                loadScope.end("result=error")
+                throw error
             }
+            PerfMonitor.shared.noteModelLoad()
+            loadScope.end("result=ok")
 
             modelHandle = handle
             await MainActor.run { self.state = .ready }
@@ -80,7 +90,12 @@ final class CactusManager {
     }
 
     func unloadModel() {
-        if let h = modelHandle { cactusDestroy(h) }
+        if let h = modelHandle {
+            let releaseStart = DispatchTime.now().uptimeNanoseconds
+            cactusDestroy(h)
+            PerfMonitor.shared.noteModelRelease()
+            PerfMonitor.log("model_unload", "ms=\(PerfMonitor.ms(since: releaseStart))")
+        }
         modelHandle = nil
         state = .idle
     }
@@ -95,7 +110,11 @@ final class CactusManager {
         await withCheckedContinuation { continuation in
             inferenceQueue.async {
                 print("[CactusManager] Releasing model after memory pressure...")
+                let releaseStart = DispatchTime.now().uptimeNanoseconds
+                let footprintBefore = PerfMonitor.physFootprintBytes()
                 cactusDestroy(sendableHandle.rawValue)
+                PerfMonitor.shared.noteModelRelease()
+                PerfMonitor.log("model_release", "ms=\(PerfMonitor.ms(since: releaseStart)) footprint_before_mb=\(PerfMonitor.mb(footprintBefore))")
                 print("[CactusManager] Model released.")
                 continuation.resume()
             }
@@ -133,16 +152,25 @@ final class CactusManager {
 
         return try await runOnInferenceQueue {
             print("[CactusManager] Inference start (maxTokens: \(maxTokens))...")
-            let raw = try cactusComplete(
-                handle,
-                messagesJSON,
-                optionsJSON,
-                nil,
-                onToken.map { cb in { token, _ in
-                    cb(token)
-                    print("[Gemma]", token, terminator: "")
-                }}
-            )
+            let inferenceScope = PerfScope.begin("inference", extra: "kind=text max_tokens=\(maxTokens) messages_chars=\(messagesJSON.count)")
+            let raw: String
+            do {
+                raw = try cactusComplete(
+                    handle,
+                    messagesJSON,
+                    optionsJSON,
+                    nil,
+                    onToken.map { cb in { token, _ in
+                        cb(token)
+                        print("[Gemma]", token, terminator: "")
+                    }}
+                )
+            } catch {
+                inferenceScope.end("result=error")
+                throw error
+            }
+            PerfMonitor.shared.noteInference(vision: false)
+            inferenceScope.end("result=ok \(PerfMonitor.cactusMetrics(from: raw))")
             let text = Self.extractResponse(from: raw)
             print("\n[CactusManager] Inference done (\(text.count) chars)")
             return text
@@ -182,7 +210,16 @@ final class CactusManager {
 
         return try await runOnInferenceQueue {
             print("[CactusManager] Vision inference start...")
-            let raw = try cactusComplete(handle, messagesJSON, optionsJSON, nil, nil)
+            let inferenceScope = PerfScope.begin("inference", extra: "kind=vision max_tokens=\(maxTokens) messages_chars=\(messagesJSON.count) input_image_bytes=\(imageData.count)")
+            let raw: String
+            do {
+                raw = try cactusComplete(handle, messagesJSON, optionsJSON, nil, nil)
+            } catch {
+                inferenceScope.end("result=error")
+                throw error
+            }
+            PerfMonitor.shared.noteInference(vision: true)
+            inferenceScope.end("result=ok \(PerfMonitor.cactusMetrics(from: raw))")
             let text = Self.extractResponse(from: raw)
             print("[CactusManager] Vision inference done (\(text.count) chars)")
             return text

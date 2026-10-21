@@ -18,6 +18,24 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
     // MARK: - HealthReportExtracting
 
     func extractHealthReport(imageData: Data) async throws -> HealthReport {
+        // [PERF] measurement wrapper; the original logic lives in extractHealthReportImpl.
+        let scope = PerfScope.begin("health_scan", extra: "image_bytes=\(imageData.count)")
+        do {
+            let report = try await extractHealthReportImpl(imageData: imageData)
+            scope.end("result=ok metrics=\(report.metrics.count) lab=\"\(report.labName)\"")
+            if PerfMonitor.verbose {
+                for metric in report.metrics {
+                    print("[PERF-RESULT] scan_metric name=\"\(metric.name)\" value=\"\(metric.value)\" unit=\"\(metric.unit)\" status=\(metric.status)")
+                }
+            }
+            return report
+        } catch {
+            scope.end("result=error")
+            throw error
+        }
+    }
+
+    private func extractHealthReportImpl(imageData: Data) async throws -> HealthReport {
         var releasedModelForOCR = false
         if isModelReady {
             do {
