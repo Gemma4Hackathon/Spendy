@@ -5,6 +5,10 @@ struct SpendyApp: App {
     @State private var appState = AppState()
     @State private var appEnvironment = AppEnvironment(route: .onDevice) // .mock / .remote / .onDevice
 
+    init() {
+        PerfMonitor.logLaunch()
+    }
+
     var body: some Scene {
         WindowGroup {
             MainTabView()

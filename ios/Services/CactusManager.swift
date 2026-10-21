@@ -152,7 +152,7 @@ final class CactusManager {
 
         return try await runOnInferenceQueue {
             print("[CactusManager] Inference start (maxTokens: \(maxTokens))...")
-            let inferenceScope = PerfScope.begin("inference", extra: "kind=text max_tokens=\(maxTokens) messages_chars=\(messagesJSON.count)")
+            let inferenceScope = PerfScope.begin("inference", extra: "kind=text max_tokens=\(maxTokens) messages_chars=\(messagesJSON.count) messages_hash=\(PerfMonitor.fnv1a(messagesJSON))")
             let raw: String
             do {
                 raw = try cactusComplete(
@@ -171,6 +171,7 @@ final class CactusManager {
             }
             PerfMonitor.shared.noteInference(vision: false)
             inferenceScope.end("result=ok \(PerfMonitor.cactusMetrics(from: raw))")
+            PerfMonitor.logResponsePreview(kind: "text", raw: raw)
             let text = Self.extractResponse(from: raw)
             print("\n[CactusManager] Inference done (\(text.count) chars)")
             return text
@@ -210,7 +211,7 @@ final class CactusManager {
 
         return try await runOnInferenceQueue {
             print("[CactusManager] Vision inference start...")
-            let inferenceScope = PerfScope.begin("inference", extra: "kind=vision max_tokens=\(maxTokens) messages_chars=\(messagesJSON.count) input_image_bytes=\(imageData.count)")
+            let inferenceScope = PerfScope.begin("inference", extra: "kind=vision max_tokens=\(maxTokens) messages_chars=\(messagesJSON.count) messages_hash=\(PerfMonitor.fnv1a(messagesJSON)) input_image_bytes=\(imageData.count) input_image_hash=\(PerfMonitor.fnv1a(imageData.base64EncodedString()))")
             let raw: String
             do {
                 raw = try cactusComplete(handle, messagesJSON, optionsJSON, nil, nil)
@@ -220,6 +221,7 @@ final class CactusManager {
             }
             PerfMonitor.shared.noteInference(vision: true)
             inferenceScope.end("result=ok \(PerfMonitor.cactusMetrics(from: raw))")
+            PerfMonitor.logResponsePreview(kind: "vision", raw: raw)
             let text = Self.extractResponse(from: raw)
             print("[CactusManager] Vision inference done (\(text.count) chars)")
             return text

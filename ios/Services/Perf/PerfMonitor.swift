@@ -19,8 +19,14 @@ final class PerfMonitor: @unchecked Sendable {
 
     static let signposter = OSSignposter(subsystem: "com.gemma4good.Spendy", category: "Perf")
 
-    /// True when the app was launched with `-SpendyPerfVerbose`.
-    static let verbose: Bool = ProcessInfo.processInfo.arguments.contains("-SpendyPerfVerbose")
+    /// True when launched with an argument containing `SpendyPerfVerbose`
+    /// (tolerates a missing or auto-corrected leading dash) or with the
+    /// environment variable `SPENDY_PERF_VERBOSE=1`.
+    static let verbose: Bool = {
+        let info = ProcessInfo.processInfo
+        return info.arguments.contains { $0.contains("SpendyPerfVerbose") }
+            || info.environment["SPENDY_PERF_VERBOSE"] == "1"
+    }()
 
     private let lock = NSLock()
 
@@ -149,6 +155,47 @@ final class PerfMonitor: @unchecked Sendable {
     static func ms(since start: UInt64) -> String {
         let elapsedNs = DispatchTime.now().uptimeNanoseconds &- start
         return String(format: "%.1f", Double(elapsedNs) / 1_000_000.0)
+    }
+
+    // MARK: Launch / input identity
+
+    /// One line at app start so every log states its build configuration and flags.
+    static func logLaunch() {
+        #if DEBUG
+        let config = "Debug"
+        #else
+        let config = "Release"
+        #endif
+        let args = ProcessInfo.processInfo.arguments.dropFirst().joined(separator: "|")
+        log("app_launch", "config=\(config) verbose=\(verbose) launch_args=\"\(args)\"")
+    }
+
+    /// Verbose-only: first characters of a model response, newlines escaped.
+    /// Used to see what short or invalid outputs actually contain.
+    static func logResponsePreview(kind: String, raw: String) {
+        guard verbose else { return }
+        let text: String
+        if let data = raw.data(using: .utf8),
+           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let response = dict["response"] as? String {
+            text = response
+        } else {
+            text = raw
+        }
+        let preview = text.prefix(240)
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\"", with: "'")
+        print("[PERF-RESULT] response_preview kind=\(kind) chars=\(text.count) text=\"\(preview)\"")
+    }
+
+    /// Stable 64-bit FNV-1a hash of a prompt, used to prove two runs had identical input.
+    static func fnv1a(_ text: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return String(hash, radix: 16)
     }
 
     // MARK: Logging
