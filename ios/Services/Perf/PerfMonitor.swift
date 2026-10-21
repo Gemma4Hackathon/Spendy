@@ -167,7 +167,7 @@ final class PerfMonitor: @unchecked Sendable {
         let config = "Release"
         #endif
         let args = ProcessInfo.processInfo.arguments.dropFirst().joined(separator: "|")
-        log("app_launch", "config=\(config) verbose=\(verbose) launch_args=\"\(args)\"")
+        log("app_launch", "config=\(config) verbose=\(verbose) vision_tokens=\(bundledVisionTokenBudget()) launch_args=\"\(args)\"")
     }
 
     /// Verbose-only: first characters of a model response, newlines escaped.
@@ -186,6 +186,19 @@ final class PerfMonitor: @unchecked Sendable {
             .replacingOccurrences(of: "\n", with: "\\n")
             .replacingOccurrences(of: "\"", with: "'")
         print("[PERF-RESULT] response_preview kind=\(kind) chars=\(text.count) text=\"\(preview)\"")
+    }
+
+    /// Reads `vision_default_output_length` from the bundled model's config.txt, so each
+    /// log records which visual-token budget the app actually shipped with.
+    static func bundledVisionTokenBudget() -> String {
+        guard let url = Bundle.main.url(forResource: "gemma-4-e2b-m23k-cot-sft-lora-int4", withExtension: nil)?
+                .appendingPathComponent("config.txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8)
+        else { return "na" }
+        for line in text.split(separator: "\n") where line.hasPrefix("vision_default_output_length=") {
+            return String(line.dropFirst("vision_default_output_length=".count))
+        }
+        return "na"
     }
 
     /// Stable 64-bit FNV-1a hash of a prompt, used to prove two runs had identical input.

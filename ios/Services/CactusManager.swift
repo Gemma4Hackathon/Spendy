@@ -133,9 +133,9 @@ final class CactusManager {
     ) async throws -> String {
         let handle = try requireHandle()
 
-        let messages: [[String: Any]] = [
-            ["role": "system", "content": systemPrompt],
-            ["role": "user",   "content": userMessage]
+        let messages = [
+            ChatMessagePayload(role: "system", content: systemPrompt),
+            ChatMessagePayload(role: "user", content: userMessage)
         ]
         let options: [String: Any] = [
             "max_tokens": maxTokens,
@@ -145,7 +145,7 @@ final class CactusManager {
             "auto_handoff": false
         ]
 
-        let messagesJSON = try jsonString(messages)
+        let messagesJSON = try orderedMessagesJSON(messages)
         let optionsJSON  = try jsonString(options)
 
         print("[CactusManager] Inference queued (maxTokens: \(maxTokens))...")
@@ -190,13 +190,9 @@ final class CactusManager {
         let imageURL = try writeTemporaryJPEG(from: imageData)
         defer { try? FileManager.default.removeItem(at: imageURL) }
 
-        let messages: [[String: Any]] = [
-            ["role": "system", "content": systemPrompt],
-            [
-                "role": "user",
-                "content": userMessage,
-                "images": [imageURL.path]
-            ]
+        let messages = [
+            ChatMessagePayload(role: "system", content: systemPrompt),
+            ChatMessagePayload(role: "user", content: userMessage, images: [imageURL.path])
         ]
         let options: [String: Any] = [
             "max_tokens": maxTokens,
@@ -204,7 +200,7 @@ final class CactusManager {
             "auto_handoff": false
         ]
 
-        let messagesJSON = try jsonString(messages)
+        let messagesJSON = try orderedMessagesJSON(messages)
         let optionsJSON  = try jsonString(options)
 
         print("[CactusManager] Vision inference queued...")
@@ -258,6 +254,43 @@ final class CactusManager {
                 }
             }
         }
+    }
+
+    /// One chat message as sent to Cactus.
+    private struct ChatMessagePayload {
+        let role: String
+        let content: String
+        var images: [String]? = nil
+    }
+
+    /// Serializes chat messages with a fixed key order: role, content, images.
+    ///
+    /// Cactus's `parse_messages_json` (cactus/ffi/cactus_utils.h) only looks for
+    /// `"content"` after `"role"`. Building messages as Swift dictionaries and passing
+    /// them to JSONSerialization gave an unstable key order, so whenever `content` was
+    /// emitted first Cactus silently dropped it (35 % of text inferences in
+    /// bench/results/baseline-2026-10-21.md). Each value is still escaped by
+    /// JSONSerialization, so only the key order changes.
+    private func orderedMessagesJSON(_ messages: [ChatMessagePayload]) throws -> String {
+        var objects: [String] = []
+        for message in messages {
+            let role = try jsonFragment(message.role)
+            let content = try jsonFragment(message.content)
+            var fields = ["\"role\":" + role, "\"content\":" + content]
+            if let images = message.images {
+                let imagesJSON = try jsonFragment(images)
+                fields.append("\"images\":" + imagesJSON)
+            }
+            objects.append("{" + fields.joined(separator: ",") + "}")
+        }
+        return ("[" + objects.joined(separator: ",") + "]")
+            .replacingOccurrences(of: "\\/", with: "/")
+    }
+
+    private func jsonFragment(_ value: Any) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed])
+        guard let str = String(data: data, encoding: .utf8) else { throw CactusError.jsonEncoding }
+        return str
     }
 
     private func jsonString(_ object: Any) throws -> String {
