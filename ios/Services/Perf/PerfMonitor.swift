@@ -188,6 +188,24 @@ final class PerfMonitor: @unchecked Sendable {
         print("[PERF-RESULT] response_preview kind=\(kind) chars=\(text.count) text=\"\(preview)\"")
     }
 
+    /// A model response that a provider failed to parse. The one-line record (no content)
+    /// is always printed. Verbose-only: the full raw response and the extracted JSON
+    /// candidate follow verbatim (no truncation, no escaping) between [PERF-RAW] markers.
+    static func logParseFailure(source: String, reason: String, raw: String, cleaned: String, error: Error? = nil) {
+        log("parse_failure", "source=\(source) reason=\(reason) raw_chars=\(raw.count) cleaned_chars=\(cleaned.count)")
+        guard verbose else { return }
+        let detail = error.map { error -> String in
+            let nsError = error as NSError
+            let text = nsError.userInfo[NSDebugDescriptionErrorKey] as? String ?? nsError.localizedDescription
+            return text.replacingOccurrences(of: "\"", with: "'")
+        } ?? ""
+        print("[PERF-RAW] begin source=\(source) reason=\(reason) error=\"\(detail)\"")
+        print(raw)
+        print("[PERF-RAW] cleaned source=\(source)")
+        print(cleaned)
+        print("[PERF-RAW] end source=\(source)")
+    }
+
     /// Reads `vision_default_output_length` from the bundled model's config.txt, so each
     /// log records which visual-token budget the app actually shipped with.
     static func bundledVisionTokenBudget() -> String {
@@ -222,7 +240,7 @@ final class PerfMonitor: @unchecked Sendable {
 
     /// Parses the timing fields Cactus already returns in its JSON envelope
     /// and returns them as a "key=value" string. Read-only; never alters the response.
-    static func cactusMetrics(from raw: String) -> String {
+    static func cactusMetrics(from raw: String, maxTokens: Int? = nil) -> String {
         guard let data = raw.data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return "cactus_json=unparsed" }
@@ -234,6 +252,11 @@ final class PerfMonitor: @unchecked Sendable {
         let responseChars = (dict["response"] as? String)?.count ?? -1
         let thinkingChars = (dict["thinking"] as? String)?.count ?? 0
         let success = (dict["success"] as? Bool).map { $0 ? "true" : "false" } ?? "na"
+        // Decoding stopped at the token cap, so the response is cut off.
+        let hitMaxTokens: String = {
+            guard let maxTokens, let decoded = (dict["decode_tokens"] as? NSNumber)?.intValue else { return "na" }
+            return decoded >= maxTokens ? "true" : "false"
+        }()
 
         return [
             "success=\(success)",
@@ -245,7 +268,8 @@ final class PerfMonitor: @unchecked Sendable {
             "decode_tokens=\(number("decode_tokens"))",
             "cactus_ram_mb=\(number("ram_usage_mb"))",
             "response_chars=\(responseChars)",
-            "thinking_chars=\(thinkingChars)"
+            "thinking_chars=\(thinkingChars)",
+            "hit_max_tokens=\(hitMaxTokens)"
         ].joined(separator: " ")
     }
 }

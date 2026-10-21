@@ -170,7 +170,7 @@ final class CactusManager {
                 throw error
             }
             PerfMonitor.shared.noteInference(vision: false)
-            inferenceScope.end("result=ok \(PerfMonitor.cactusMetrics(from: raw))")
+            inferenceScope.end("result=ok \(PerfMonitor.cactusMetrics(from: raw, maxTokens: maxTokens))")
             PerfMonitor.logResponsePreview(kind: "text", raw: raw)
             let text = Self.extractResponse(from: raw)
             print("\n[CactusManager] Inference done (\(text.count) chars)")
@@ -216,7 +216,7 @@ final class CactusManager {
                 throw error
             }
             PerfMonitor.shared.noteInference(vision: true)
-            inferenceScope.end("result=ok \(PerfMonitor.cactusMetrics(from: raw))")
+            inferenceScope.end("result=ok \(PerfMonitor.cactusMetrics(from: raw, maxTokens: maxTokens))")
             PerfMonitor.logResponsePreview(kind: "vision", raw: raw)
             let text = Self.extractResponse(from: raw)
             print("[CactusManager] Vision inference done (\(text.count) chars)")

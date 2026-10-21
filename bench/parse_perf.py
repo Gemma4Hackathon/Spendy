@@ -68,6 +68,17 @@ def main():
             vals = [v for v in vals if v is not None]
             if vals:
                 print(f"  {fld:<18} median={statistics.median(vals):>10.1f}  min={min(vals):>10.1f}  max={max(vals):>10.1f}")
+        truncated = sum(1 for r in ok if r.get("hit_max_tokens") == "true")
+        if truncated:
+            print(f"  hit_max_tokens     {truncated}/{len(ok)}")
+    failures = defaultdict(int)
+    for r in rows:
+        if r["event"] == "parse_failure":
+            failures[(r.get("source", "?"), r.get("reason", "?"))] += 1
+    if failures:
+        print("\n== parse_failure")
+        for (source, reason), n in sorted(failures.items()):
+            print(f"  {source:<22} {reason:<18} {n}")
 
 if __name__ == "__main__":
     main()

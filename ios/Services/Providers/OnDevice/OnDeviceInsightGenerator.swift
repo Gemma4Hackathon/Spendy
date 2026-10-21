@@ -166,11 +166,22 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         print("[InsightGenerator] Extracted JSON candidate (\(cleaned.count) chars).")
         logSensitive("[InsightGenerator] Extracted JSON preview: \(cleaned.prefix(300))")
 
-        guard
-            let data = cleaned.data(using: .utf8),
-            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
+        guard let data = cleaned.data(using: .utf8) else {
             print("[InsightGenerator] JSON parse failed")
+            PerfMonitor.logParseFailure(source: "insights", reason: "not_utf8", raw: text, cleaned: cleaned)
+            throw CactusError.inferenceFailure("Insight response was not valid JSON. Please regenerate.")
+        }
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            print("[InsightGenerator] JSON parse failed")
+            PerfMonitor.logParseFailure(source: "insights", reason: "invalid_json", raw: text, cleaned: cleaned, error: error)
+            throw CactusError.inferenceFailure("Insight response was not valid JSON. Please regenerate.")
+        }
+        guard let dict = object as? [String: Any] else {
+            print("[InsightGenerator] JSON parse failed")
+            PerfMonitor.logParseFailure(source: "insights", reason: "not_object", raw: text, cleaned: cleaned)
             throw CactusError.inferenceFailure("Insight response was not valid JSON. Please regenerate.")
         }
 
@@ -227,6 +238,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
 
         guard !findings.isEmpty else {
             print("[InsightGenerator] JSON parse failed: no valid findings")
+            PerfMonitor.logParseFailure(source: "insights", reason: "no_valid_findings", raw: text, cleaned: cleaned)
             throw CactusError.inferenceFailure("Insight response did not contain valid findings. Please regenerate.")
         }
 

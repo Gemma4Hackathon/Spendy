@@ -210,7 +210,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         )
 
         do {
-            let report = try parseMetrics(from: rawText, labName: "Extracted by Gemma 4 Vision")
+            let report = try parseMetrics(from: rawText, labName: "Extracted by Gemma 4 Vision", perfSource: "health_vision")
             guard reportHasPreferredCoverage(report) else {
                 print("[HealthExtractor] Gemma 4 vision extracted only \(report.metrics.count) metrics; using OCR + Gemma text structuring.")
                 return try await recoverWithOCRTextStructuring(
@@ -270,7 +270,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
             temperature: 0.05
         )
 
-        return try parseMetrics(from: repairedText, labName: "Gemma 4 Vision + JSON Repair")
+        return try parseMetrics(from: repairedText, labName: "Gemma 4 Vision + JSON Repair", perfSource: "health_vision_repair")
     }
 
     private func recoverWithOCRTextStructuring(
@@ -346,7 +346,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
             temperature: 0.05
         )
 
-        return try parseMetrics(from: rawText, labName: "Apple Vision OCR + Gemma 4")
+        return try parseMetrics(from: rawText, labName: "Apple Vision OCR + Gemma 4", perfSource: "health_ocr_text")
     }
 
     private func runTextInferenceWithFallback(
@@ -540,23 +540,29 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
     }
 
-    private func parseMetrics(from text: String, labName: String) throws -> HealthReport {
+    private func parseMetrics(from text: String, labName: String, perfSource: String) throws -> HealthReport {
         print("[HealthExtractor] Raw model text received (\(text.count) chars).")
         logSensitive("[HealthExtractor] Raw model text preview: \(text.prefix(220))")
         let cleaned = extractJSONObject(from: text)
         guard let data = cleaned.data(using: .utf8) else {
             print("[HealthExtractor] JSON parse failed: no UTF-8 data")
+            PerfMonitor.logParseFailure(source: perfSource, reason: "not_utf8", raw: text, cleaned: cleaned)
             throw CactusError.inferenceFailure("Health scan response was not valid UTF-8 JSON.")
         }
 
-        guard let object = try? JSONSerialization.jsonObject(with: data) else {
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: data)
+        } catch {
             print("[HealthExtractor] JSON parse failed: invalid JSON")
+            PerfMonitor.logParseFailure(source: perfSource, reason: "invalid_json", raw: text, cleaned: cleaned, error: error)
             throw CactusError.inferenceFailure("Health scan response was not valid JSON.")
         }
 
         let parsed = parseHealthPayload(object)
         guard !parsed.metricDictionaries.isEmpty else {
             print("[HealthExtractor] JSON parse failed: unexpected shape \(type(of: object))")
+            PerfMonitor.logParseFailure(source: perfSource, reason: "unexpected_shape", raw: text, cleaned: cleaned)
             throw CactusError.inferenceFailure("Health scan response did not match the expected JSON schema.")
         }
 
@@ -589,6 +595,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
 
         if metrics.isEmpty {
+            PerfMonitor.logParseFailure(source: perfSource, reason: "no_valid_metrics", raw: text, cleaned: cleaned)
             throw CactusError.inferenceFailure("No health metrics were extracted from the selected image.")
         }
 

@@ -157,10 +157,19 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         fallback: FinanceInsightPayload
     ) -> FinanceInsightPayload {
         let cleaned = extractJSONObject(from: text)
-        guard
-            let data = cleaned.data(using: .utf8),
-            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
+        guard let data = cleaned.data(using: .utf8) else {
+            PerfMonitor.logParseFailure(source: "finance", reason: "not_utf8", raw: text, cleaned: cleaned)
+            return fallback
+        }
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            PerfMonitor.logParseFailure(source: "finance", reason: "invalid_json", raw: text, cleaned: cleaned, error: error)
+            return fallback
+        }
+        guard let dict = object as? [String: Any] else {
+            PerfMonitor.logParseFailure(source: "finance", reason: "not_object", raw: text, cleaned: cleaned)
             return fallback
         }
 
@@ -179,7 +188,10 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             )
         }
 
-        guard !items.isEmpty else { return fallback }
+        guard !items.isEmpty else {
+            PerfMonitor.logParseFailure(source: "finance", reason: "no_valid_items", raw: text, cleaned: cleaned)
+            return fallback
+        }
 
         return FinanceInsightPayload(
             shortTitle: dict["shortTitle"] as? String ?? fallback.shortTitle,
