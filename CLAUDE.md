@@ -83,12 +83,11 @@ Baseline = 5 rounds, each phase = 3 rounds. Ground truth for the sample report i
   done (`bench/results/phase2-2026-10-21.md`, commit `29208e0`). 0 JSON failures, 0 reloads, Insights 1 inference,
   fully deterministic. IMG_9596 8/8; IMG_9603 2/8 (text model skipped the lipid panel). Scans 213-325 s,
   Insights 192 s, Finance 41 s. Vision still invents values and contributes nothing to the final result.
-- After the benchmark: `bd0c74a` fills metrics from OCR table rows (offline on iPhone OCR: IMG_9603 7/8).
-  Not yet confirmed on device.
+- After the benchmark: `bd0c74a` fills metrics from OCR table rows. Confirmed on device: IMG_9603 7/8
+  (Cholesterol/HDL Ratio dropped: OCR reads "2.0" as "20").
 
 ## Next
 
-1. Confirm `bd0c74a` on device: one Health Scan of IMG_9603, expect `table_filled=5 final=9` in `scan_verification`.
-2. Optimization phase (latency is decode-bound, about 4 tok/s on 1,000+ token contexts): shorten output schemas
+Optimization phase (latency is decode-bound, about 4 tok/s on 1,000+ token contexts): shorten output schemas
    for health, Insights and Finance (check which fields the UI uses before removing any); decide what to do
    about vision (96-170 s per scan, no confirmed values). Measure with the same 3-round protocol.

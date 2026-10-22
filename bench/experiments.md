@@ -44,4 +44,4 @@ IMG_9596 8/8, IMG_9603 2/8 because the text model returned only the Key Findings
 
 | Change after the benchmark | Where | Reason |
 |---|---|---|
-| Known metrics read from OCR table rows (label line + same-row reading, plausibility range, verified on its row) fill keys the models left out | `HealthReportVerifier.tableCandidates`, extractor (`bd0c74a`) | IMG_9603 lipid panel missing. Offline on iPhone OCR from r1-r3: IMG_9603 7/8, IMG_9596 8/8. Not yet confirmed on device |
+| Known metrics read from OCR table rows (label line + same-row reading, plausibility range, verified on its row) fill keys the models left out | `HealthReportVerifier.tableCandidates`, extractor (`bd0c74a`) | IMG_9603 lipid panel missing. Offline on iPhone OCR from r1-r3: IMG_9603 7/8, IMG_9596 8/8. Confirmed on device for IMG_9603 (7/8, `table_filled=5`) |
