@@ -45,3 +45,12 @@ IMG_9596 8/8, IMG_9603 2/8 because the text model returned only the Key Findings
 | Change after the benchmark | Where | Reason |
 |---|---|---|
 | Known metrics read from OCR table rows (label line + same-row reading, plausibility range, verified on its row) fill keys the models left out | `HealthReportVerifier.tableCandidates`, extractor (`bd0c74a`) | IMG_9603 lipid panel missing. Offline on iPhone OCR from r1-r3: IMG_9603 7/8, IMG_9596 8/8. Confirmed on device for IMG_9603 (7/8, `table_filled=5`) |
+
+### Vision root-cause experiment (2026-10-21, `phase3-vision-crop.log`, phase 2 build)
+
+IMG_9603 cropped to the section 6 table, same prompt and `vision_tokens=140`: OCR-verified vision
+values 7/8 with correct flags (full page: 1-2/8). The ratio row was not confirmable because OCR
+reads "2.0" as "20". Vision decode 751 tokens, 114 s, peak 1,725 MB. Conclusion: vision errors on the
+full page come from Cactus's fixed pixel budget (`model_gemma4_vision.cpp`: about
+`budget x 9 x 16^2` px, 432x672 for this page, table text about 6 px tall), not from the model's
+ability to read the table.

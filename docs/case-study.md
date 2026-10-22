@@ -110,9 +110,11 @@ Phase 2 traded scan latency for correctness on purpose; phase 3 targets latency.
   (about 4 lines x 8 characters). The model sees layout and large type, and fills the rest from
   its language prior. Raising the budget is not an option: at 280 the vision pass already ran out
   of memory half the time.
-- **Confirmation experiment.** _Pending: the same report cropped to the results table (text about
-  2.5x larger at the same 140-token budget). If vision accuracy rises sharply, resolution is
-  confirmed as the root cause._
+- **Confirmation experiment.** Same build, same prompt, same 140-token budget; the only change was
+  cropping the photo to the results table, which makes the text about 2.5x larger after Cactus's
+  resize. OCR-verified vision values went from **1-2/8 to 7/8**, all with the correct flag. The
+  eighth (the ratio) could not be confirmed because OCR itself reads "2.0" as "20". The model can
+  read the report; the fixed pixel budget was hiding the digits. Root cause confirmed.
 - **Fix.** Never show an unverified vision value. Apple Vision OCR reads the same image (with the
   model kept loaded) and a vision value is kept only if OCR read it on the metric's own table row.
   Missing values come from Gemma 4 structuring the OCR text. Normal/High status is decided in
@@ -138,6 +140,12 @@ _In progress. Plan: run OCR first and use vision only as a fallback (vision cost
 scan and contributed no displayed value), and stop asking the model for fields that Swift already
 computes or the UI never shows (health status, ranges and evidence; Insights scores; Finance
 amounts)._
+
+## What I would do next
+
+- **OCR-guided crop for vision.** Case 4 shows vision reads a cropped table correctly at the same
+  memory cost. OCR bounding boxes already locate the results table, so the vision fallback could
+  be fed that crop instead of the whole page.
 
 ## Lessons
 
