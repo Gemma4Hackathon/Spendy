@@ -215,8 +215,10 @@ private struct MetricCard: View {
             }
             .frame(height: 2)
 
-            Text("Normal: \(metric.normalRange)")
-                .font(.caption2).foregroundStyle(SpendyTheme.textMuted)
+            if !metric.normalRange.isEmpty {
+                Text("Normal: \(metric.normalRange)")
+                    .font(.caption2).foregroundStyle(SpendyTheme.textMuted)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(SpendyTheme.paddingSm)

@@ -49,7 +49,10 @@ final class CactusManager {
 
     /// Runs cactusInit on a BACKGROUND thread — never blocks the UI.
     func loadModel() async {
-        guard case .idle = state else {
+        switch state {
+        case .idle, .failed:
+            break
+        case .loading, .ready:
             print("[CactusManager] Already loading or loaded, skipping.")
             return
         }
@@ -137,11 +140,15 @@ final class CactusManager {
             ChatMessagePayload(role: "system", content: systemPrompt),
             ChatMessagePayload(role: "user", content: userMessage)
         ]
+        // repetition_penalty 1.0 disables it. Cactus subtracts log(penalty) once per occurrence
+        // of each of the last 128 sampled tokens (cactus/engine/engine_model.cpp), so in long
+        // JSON the repeated `":"`, `","` and quote tokens get pushed down until the model emits
+        // `}` or `>` instead (bench/results/phase2-diag-2026-10-21.md).
         let options: [String: Any] = [
             "max_tokens": maxTokens,
             "temperature": temperature,
             "top_p": 0.9,
-            "repetition_penalty": 1.1,
+            "repetition_penalty": 1.0,
             "auto_handoff": false
         ]
 
@@ -194,9 +201,11 @@ final class CactusManager {
             ChatMessagePayload(role: "system", content: systemPrompt),
             ChatMessagePayload(role: "user", content: userMessage, images: [imageURL.path])
         ]
+        // Greedy and no repetition penalty (Cactus defaults it to 1.1); see `complete`.
         let options: [String: Any] = [
             "max_tokens": maxTokens,
-            "temperature": 0.1,
+            "temperature": 0,
+            "repetition_penalty": 1.0,
             "auto_handoff": false
         ]
 

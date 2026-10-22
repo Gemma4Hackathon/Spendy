@@ -58,7 +58,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             systemPrompt: insightSystemPrompt(isRetry: isRetry),
             userMessage: userMessage,
             maxTokens: 1200,
-            temperature: 0.05
+            temperature: 0
         )
     }
 
@@ -162,27 +162,24 @@ final class OnDeviceInsightGenerator: InsightGenerating {
     private func parseInsightResult(from text: String, spending: [SpendingEntry], health: HealthReport) throws -> InsightResult {
         print("[InsightGenerator] Raw text received (\(text.count) chars).")
         logSensitive("[InsightGenerator] Raw text preview: \(text.prefix(200))")
-        let cleaned = extractJSONObject(from: text)
-        print("[InsightGenerator] Extracted JSON candidate (\(cleaned.count) chars).")
-        logSensitive("[InsightGenerator] Extracted JSON preview: \(cleaned.prefix(300))")
+        let parsed = LenientJSON.parse(text)
+        PerfMonitor.logJSONParse(source: "insights", raw: text, result: parsed)
+        print("[InsightGenerator] Extracted JSON candidate (\(parsed.candidate.count) chars).")
+        logSensitive("[InsightGenerator] Extracted JSON preview: \(parsed.candidate.prefix(300))")
 
-        guard let data = cleaned.data(using: .utf8) else {
+        guard let dict = parsed.dictionary else {
             print("[InsightGenerator] JSON parse failed")
-            PerfMonitor.logParseFailure(source: "insights", reason: "not_utf8", raw: text, cleaned: cleaned)
+            if parsed.object != nil {
+                PerfMonitor.logParseFailure(source: "insights", reason: "not_object", raw: text, cleaned: parsed.candidate)
+            }
             throw CactusError.inferenceFailure("Insight response was not valid JSON. Please regenerate.")
         }
-        let object: Any
-        do {
-            object = try JSONSerialization.jsonObject(with: data)
-        } catch {
-            print("[InsightGenerator] JSON parse failed")
-            PerfMonitor.logParseFailure(source: "insights", reason: "invalid_json", raw: text, cleaned: cleaned, error: error)
-            throw CactusError.inferenceFailure("Insight response was not valid JSON. Please regenerate.")
-        }
-        guard let dict = object as? [String: Any] else {
-            print("[InsightGenerator] JSON parse failed")
-            PerfMonitor.logParseFailure(source: "insights", reason: "not_object", raw: text, cleaned: cleaned)
-            throw CactusError.inferenceFailure("Insight response was not valid JSON. Please regenerate.")
+        let cleaned = parsed.candidate
+        // The prompt's schema is a template full of REPLACE markers; a copied template is not an answer.
+        guard !cleaned.contains("REPLACE") else {
+            print("[InsightGenerator] Response still contains REPLACE placeholders")
+            PerfMonitor.logParseFailure(source: "insights", reason: "placeholders", raw: text, cleaned: cleaned)
+            throw CactusError.inferenceFailure("Insight response repeated the template. Please regenerate.")
         }
 
         let riskScore = parseInt(dict["riskScore"]) ?? 65
@@ -193,30 +190,29 @@ final class OnDeviceInsightGenerator: InsightGenerating {
 
         let findings: [InsightConnection] = findingsArray.compactMap { f in
             guard
-                let cause         = f["cause"]         as? String,
-                let causeDetail   = f["causeDetail"]   as? String,
-                let healthImpact  = f["healthImpact"]  as? String,
-                let healthDetail  = f["healthDetail"]  as? String,
-                let risk          = f["risk"]           as? String,
-                let accentColor   = f["accentColor"]   as? String
+                let cause         = string(f["cause"]),
+                let causeDetail   = string(f["causeDetail"]),
+                let healthImpact  = string(f["healthImpact"]),
+                let healthDetail  = string(f["healthDetail"]),
+                let risk          = string(f["risk"])
             else { return nil }
 
-            let icon         = f["icon"]    as? String ?? "sparkles"
+            let accentColor  = string(f["accentColor"]) ?? "amber"
+            let icon         = string(f["icon"]) ?? "sparkles"
             let actionsArray = f["actions"] as? [[String: Any]] ?? []
 
             let actions: [InsightAction] = actionsArray.compactMap { a in
                 guard
-                    let title       = a["title"]           as? String,
-                    let description = a["description"]     as? String,
-                    let outcome     = a["expectedOutcome"] as? String,
-                    let timeframe   = a["timeframe"]       as? String
+                    let title       = string(a["title"]),
+                    let description = string(a["description"]),
+                    let outcome     = string(a["expectedOutcome"])
                 else { return nil }
                 return InsightAction(
                     title:           title,
                     description:     description,
                     expectedOutcome: outcome,
-                    timeframe:       timeframe,
-                    difficulty:      a["difficulty"] as? Int ?? 2
+                    timeframe:       string(a["timeframe"]) ?? "7 days",
+                    difficulty:      parseInt(a["difficulty"]) ?? 2
                 )
             }
 
@@ -255,30 +251,30 @@ final class OnDeviceInsightGenerator: InsightGenerating {
 
     // MARK: - Helpers
 
-    private func extractJSONObject(from text: String) -> String {
-        let stripped = text
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```",     with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let start = stripped.firstIndex(of: "{"),
-           let end   = stripped.lastIndex(of: "}") {
-            return String(stripped[start...end])
+    /// Non-empty trimmed text; numbers are accepted where the schema expects strings.
+    private func string(_ value: Any?) -> String? {
+        switch value {
+        case let text as String:
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        case let number as NSNumber:
+            return number.stringValue
+        default:
+            return nil
         }
-        return stripped
     }
 
     private func parseInt(_ value: Any?) -> Int? {
-        if let intValue = value as? Int { return intValue }
-        if let doubleValue = value as? Double { return Int(doubleValue) }
-        if let stringValue = value as? String { return Int(stringValue) }
-        return nil
+        parseDouble(value).map { Int($0) }
     }
 
+    /// Accepts numbers and numeric strings such as "1,721" or "NT$1721".
     private func parseDouble(_ value: Any?) -> Double? {
-        if let doubleValue = value as? Double { return doubleValue }
-        if let intValue = value as? Int { return Double(intValue) }
-        if let stringValue = value as? String { return Double(stringValue) }
-        return nil
+        if let number = value as? NSNumber { return number.doubleValue }
+        guard let text = value as? String else { return nil }
+        let digits = text.replacingOccurrences(of: ",", with: "")
+        guard let match = digits.range(of: #"-?\d+(?:\.\d+)?"#, options: .regularExpression) else { return nil }
+        return Double(digits[match])
     }
 
     private func fallbackActions(cause: String, healthImpact: String) -> [InsightAction] {
@@ -312,19 +308,17 @@ final class OnDeviceInsightGenerator: InsightGenerating {
     private func parsePlanItem(_ value: Any?) -> InsightPlanItem? {
         guard
             let dict = value as? [String: Any],
-            let title = dict["title"] as? String,
-            let recommendation = dict["recommendation"] as? String,
-            let whyItMatters = dict["whyItMatters"] as? String,
-            let targetMetric = dict["targetMetric"] as? String,
-            let timeframe = dict["timeframe"] as? String
+            let title = string(dict["title"]),
+            let recommendation = string(dict["recommendation"]),
+            let whyItMatters = string(dict["whyItMatters"])
         else { return nil }
 
         return InsightPlanItem(
             title: title,
             recommendation: recommendation,
             whyItMatters: whyItMatters,
-            targetMetric: targetMetric,
-            timeframe: timeframe
+            targetMetric: string(dict["targetMetric"]) ?? "",
+            timeframe: string(dict["timeframe"]) ?? "Next 7 days"
         )
     }
 

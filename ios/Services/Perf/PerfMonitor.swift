@@ -206,6 +206,25 @@ final class PerfMonitor: @unchecked Sendable {
         print("[PERF-RAW] end source=\(source)")
     }
 
+    /// Outcome of LenientJSON on a model response: a `json_repair` record when repairs
+    /// were applied, and `logParseFailure` when the text still is not JSON.
+    static func logJSONParse(source: String, raw: String, result: LenientJSON.Result) {
+        if !result.fixes.isEmpty {
+            log("json_repair", "source=\(source) fixes=\(result.fixSummary) parsed=\(result.object != nil)")
+        }
+        if result.object == nil {
+            logParseFailure(source: source, reason: "invalid_json", raw: raw, cleaned: result.candidate, error: result.error)
+        }
+    }
+
+    /// Verbose-only: a block of text printed verbatim between [PERF-RAW] markers.
+    static func logRawText(source: String, text: String) {
+        guard verbose else { return }
+        print("[PERF-RAW] begin source=\(source)")
+        print(text)
+        print("[PERF-RAW] end source=\(source)")
+    }
+
     /// Reads `vision_default_output_length` from the bundled model's config.txt, so each
     /// log records which visual-token budget the app actually shipped with.
     static func bundledVisionTokenBudget() -> String {

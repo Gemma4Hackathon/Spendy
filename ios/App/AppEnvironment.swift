@@ -46,7 +46,10 @@ final class AppEnvironment {
     /// `onDeviceInstallState` in sync so the UI can react.
     @MainActor
     func loadOnDeviceModelIfNeeded() async {
-        guard case .idle = CactusManager.shared.state else {
+        switch CactusManager.shared.state {
+        case .idle, .failed:
+            break
+        case .loading, .ready:
             // Already loading or loaded — just sync the badge
             syncInstallState()
             return

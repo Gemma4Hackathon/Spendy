@@ -72,13 +72,26 @@ def main():
         if truncated:
             print(f"  hit_max_tokens     {truncated}/{len(ok)}")
     failures = defaultdict(int)
+    repairs = defaultdict(int)
     for r in rows:
         if r["event"] == "parse_failure":
             failures[(r.get("source", "?"), r.get("reason", "?"))] += 1
+        elif r["event"] == "json_repair":
+            repairs[(r.get("source", "?"), r.get("parsed", "?"))] += 1
     if failures:
         print("\n== parse_failure")
         for (source, reason), n in sorted(failures.items()):
             print(f"  {source:<22} {reason:<18} {n}")
+    if repairs:
+        print("\n== json_repair (parsed after repair?)")
+        for (source, parsed), n in sorted(repairs.items()):
+            print(f"  {source:<22} parsed={parsed:<12} {n}")
+    scans = [r for r in rows if r["event"] == "scan_verification"]
+    if scans:
+        print("\n== scan_verification")
+        for r in scans:
+            print(f"  path={r.get('path'):<22} vision={r.get('vision_metrics')} vision_verified={r.get('vision_verified')}"
+                  f" text_verified={r.get('text_verified')} final={r.get('final')}")
 
 if __name__ == "__main__":
     main()

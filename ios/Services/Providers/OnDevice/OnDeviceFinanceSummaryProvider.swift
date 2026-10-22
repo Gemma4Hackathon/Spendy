@@ -103,7 +103,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             systemPrompt: systemPrompt,
             userMessage: userMessage,
             maxTokens: 650,
-            temperature: 0.05
+            temperature: 0
         )
         return parseFinanceInsight(from: text, fallback: fallbackInsight(breakdown: breakdown, total: total))
     }
@@ -156,32 +156,31 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         from text: String,
         fallback: FinanceInsightPayload
     ) -> FinanceInsightPayload {
-        let cleaned = extractJSONObject(from: text)
-        guard let data = cleaned.data(using: .utf8) else {
-            PerfMonitor.logParseFailure(source: "finance", reason: "not_utf8", raw: text, cleaned: cleaned)
+        let parsed = LenientJSON.parse(text)
+        PerfMonitor.logJSONParse(source: "finance", raw: text, result: parsed)
+        let cleaned = parsed.candidate
+        guard let dict = parsed.dictionary else {
+            if parsed.object != nil {
+                PerfMonitor.logParseFailure(source: "finance", reason: "not_object", raw: text, cleaned: cleaned)
+            }
             return fallback
         }
-        let object: Any
-        do {
-            object = try JSONSerialization.jsonObject(with: data)
-        } catch {
-            PerfMonitor.logParseFailure(source: "finance", reason: "invalid_json", raw: text, cleaned: cleaned, error: error)
-            return fallback
-        }
-        guard let dict = object as? [String: Any] else {
-            PerfMonitor.logParseFailure(source: "finance", reason: "not_object", raw: text, cleaned: cleaned)
+        // The prompt's JSON is a template with instructions as values; a copied template is not an answer.
+        let templateMarkers = ["category or behavior", "NT$ amount\"", "no alarm language", "maximum 20 words"]
+        guard !templateMarkers.contains(where: cleaned.contains) else {
+            PerfMonitor.logParseFailure(source: "finance", reason: "placeholders", raw: text, cleaned: cleaned)
             return fallback
         }
 
         let itemsArray = dict["items"] as? [[String: Any]] ?? []
         let items = itemsArray.compactMap { item -> FinanceInsightItem? in
             guard
-                let title = item["title"] as? String,
-                let amount = item["amount"] as? String,
-                let impact = item["impact"] as? String
+                let title = string(item["title"]),
+                let amount = string(item["amount"]),
+                let impact = string(item["impact"])
             else { return nil }
             return FinanceInsightItem(
-                icon: item["icon"] as? String ?? "chart.bar.fill",
+                icon: string(item["icon"]) ?? "chart.bar.fill",
                 title: title,
                 amount: amount,
                 impact: impact
@@ -194,12 +193,25 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         }
 
         return FinanceInsightPayload(
-            shortTitle: dict["shortTitle"] as? String ?? fallback.shortTitle,
-            quickTake: dict["quickTake"] as? String ?? fallback.quickTake,
-            primaryAction: dict["primaryAction"] as? String ?? fallback.primaryAction,
+            shortTitle: string(dict["shortTitle"]) ?? fallback.shortTitle,
+            quickTake: string(dict["quickTake"]) ?? fallback.quickTake,
+            primaryAction: string(dict["primaryAction"]) ?? fallback.primaryAction,
             items: Array(items.prefix(3)),
-            markdownNote: dict["markdownNote"] as? String ?? fallback.markdownNote
+            markdownNote: string(dict["markdownNote"]) ?? fallback.markdownNote
         )
+    }
+
+    /// Non-empty trimmed text; numbers are accepted where the schema expects strings.
+    private func string(_ value: Any?) -> String? {
+        switch value {
+        case let text as String:
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        case let number as NSNumber:
+            return number.stringValue
+        default:
+            return nil
+        }
     }
 
     private func fallbackInsight(
@@ -263,17 +275,5 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
 
         **7-day checklist:** keep \(topCategory) under NT$\(weeklyTarget), skip one repeat purchase, and review the result next week.
         """
-    }
-
-    private func extractJSONObject(from text: String) -> String {
-        let stripped = text
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let start = stripped.firstIndex(of: "{"),
-           let end = stripped.lastIndex(of: "}") {
-            return String(stripped[start...end])
-        }
-        return stripped
     }
 }
