@@ -214,6 +214,9 @@ final class PerfMonitor: @unchecked Sendable {
         }
         if result.object == nil {
             logParseFailure(source: source, reason: "invalid_json", raw: raw, cleaned: result.candidate, error: result.error)
+        } else {
+            // Full parsed output too, for quality review and per-field token attribution.
+            logRawText(source: "response_\(source)", text: raw)
         }
     }
 
@@ -288,8 +291,20 @@ final class PerfMonitor: @unchecked Sendable {
             "cactus_ram_mb=\(number("ram_usage_mb"))",
             "response_chars=\(responseChars)",
             "thinking_chars=\(thinkingChars)",
-            "hit_max_tokens=\(hitMaxTokens)"
+            "hit_max_tokens=\(hitMaxTokens)",
+            "thermal_state=\(thermalStateName())"
         ].joined(separator: " ")
+    }
+
+    /// Device thermal state at the end of an inference; throttling slows decode.
+    static func thermalStateName() -> String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
     }
 }
 

@@ -71,6 +71,12 @@ def main():
         truncated = sum(1 for r in ok if r.get("hit_max_tokens") == "true")
         if truncated:
             print(f"  hit_max_tokens     {truncated}/{len(ok)}")
+        thermal = defaultdict(int)
+        for r in ok:
+            if "thermal_state" in r:
+                thermal[r["thermal_state"]] += 1
+        if thermal:
+            print("  thermal_state      " + ", ".join(f"{k}={v}" for k, v in sorted(thermal.items())))
     failures = defaultdict(int)
     repairs = defaultdict(int)
     for r in rows:
@@ -90,7 +96,7 @@ def main():
     if scans:
         print("\n== scan_verification")
         for r in scans:
-            print(f"  path={r.get('path'):<22} vision={r.get('vision_metrics')} vision_verified={r.get('vision_verified')}"
+            print(f"  path={r.get('path'):<22} vision_ran={r.get('vision_ran', 'na')} vision={r.get('vision_metrics')} vision_verified={r.get('vision_verified')}"
                   f" text_verified={r.get('text_verified')} table_filled={r.get('table_filled', 'na')} final={r.get('final')}")
 
 if __name__ == "__main__":

@@ -40,16 +40,17 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         spending: [SpendingEntry],
         health: HealthReport
     ) async throws -> InsightResult {
-        let userMessage = buildUserMessage(profile: profile, spending: spending, health: health)
+        let context = InsightContext(spending: spending, health: health)
+        let userMessage = buildUserMessage(profile: profile, spending: spending, health: health, context: context)
 
         do {
             let rawText = try await requestInsightJSON(userMessage: userMessage, isRetry: false)
-            return try parseInsightResult(from: rawText, spending: spending, health: health)
+            return try parseInsightResult(from: rawText, context: context, health: health)
         } catch {
             print("[InsightGenerator] First attempt failed: \(error.localizedDescription). Retrying with stricter schema.")
             let retryMessage = buildRetryUserMessage(from: userMessage)
             let rawText = try await requestInsightJSON(userMessage: retryMessage, isRetry: true)
-            return try parseInsightResult(from: rawText, spending: spending, health: health)
+            return try parseInsightResult(from: rawText, context: context, health: health)
         }
     }
 
@@ -57,7 +58,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         try await CactusManager.shared.complete(
             systemPrompt: insightSystemPrompt(isRetry: isRetry),
             userMessage: userMessage,
-            maxTokens: 1200,
+            maxTokens: 1000,
             temperature: 0
         )
     }
@@ -71,11 +72,11 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         You are an on-device health-and-spending insight engine.
         \(retryInstruction)
         The response MUST begin with { and end with }.
-        Required top-level keys exactly: riskScore, monthlyAtRisk, actionPlan, findings.
+        Required top-level keys exactly: actionPlan, findings.
         actionPlan MUST contain movement and food objects.
-        Each actionPlan object MUST contain title, recommendation, whyItMatters, targetMetric, timeframe.
-        The findings array MUST contain 2 objects.
-        Each finding MUST contain exactly 2 concrete actions.
+        Each actionPlan object MUST contain title, recommendation, whyItMatters.
+        The findings array MUST contain 2 objects, each with causeDetail, risk, and exactly 2 actions.
+        Each action MUST contain title, description, expectedOutcome.
         Do not output query_details, example_data, schema descriptions, markdown, comments, or text outside JSON.
         Do not use placeholders such as REPLACE.
         Do not use emojis.
@@ -84,12 +85,65 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         """
     }
 
+    // MARK: - Context computed in Swift
+
+    /// Everything the result needs that is not writing: scores, amounts, and which spending
+    /// category and health metric each finding is about. Computed once, used for the prompt
+    /// and the result, so the model never has to copy numbers back.
+    private struct InsightContext {
+        struct Finding {
+            let icon: String
+            let accentColor: String
+            let cause: String
+            let metric: HealthMetric?
+            /// "Glucose: 115mg/dL", as the prompt names the metric.
+            let metricLabel: String
+        }
+
+        let riskScore: Int
+        let monthlyAtRisk: Double
+        let findings: [Finding]
+        /// Abnormal metric names for the action plan, e.g. "Glucose, Hemoglobin A1c".
+        let targetMetric: String
+
+        init(spending: [SpendingEntry], health: HealthReport) {
+            let totalSpend = spending.reduce(0) { $0 + $1.amount }
+            let abnormal = health.metrics.filter { $0.status != .normal }
+            riskScore = min(95, 40 + abnormal.count * 12)
+            monthlyAtRisk = Double(Int(totalSpend * 0.45))
+
+            let topCats = SpendingCategory.allCases.compactMap { cat -> (String, Int)? in
+                let total = spending.filter { $0.category == cat }.reduce(0) { $0 + $1.amount }
+                guard total > 0 else { return nil }
+                return (cat.rawValue, Int(total))
+            }.sorted { $0.1 > $1.1 }.prefix(2)
+            let cat1 = topCats.first.map { "\($0.0) NT$\($0.1)" } ?? "Food Delivery NT$1500"
+            let cat2 = topCats.dropFirst().first.map { "\($0.0) NT$\($0.1)" } ?? "Drinks NT$800"
+
+            // Abnormal metrics first, so findings explain what the report flagged.
+            let ranked = abnormal + health.metrics.filter { $0.status == .normal }
+            let label: (HealthMetric?, String) -> String = { metric, fallback in
+                metric.map { "\($0.name): \($0.value)\($0.unit)" } ?? fallback
+            }
+            findings = [
+                Finding(icon: "fork.knife", accentColor: "amber", cause: "\(cat1) spending pattern",
+                        metric: ranked.first, metricLabel: label(ranked.first, "Blood Sugar: 110 mg/dL")),
+                Finding(icon: "moon.fill", accentColor: "red", cause: "\(cat2) spending pattern",
+                        metric: ranked.dropFirst().first, metricLabel: label(ranked.dropFirst().first, "Blood Pressure: 130/85"))
+            ]
+            targetMetric = abnormal.isEmpty
+                ? "Blood pressure, glucose, triglycerides"
+                : abnormal.prefix(3).map(\.name).joined(separator: ", ")
+        }
+    }
+
     // MARK: - Prompt Builder
 
     private func buildUserMessage(
         profile: UserProfile,
         spending: [SpendingEntry],
-        health: HealthReport
+        health: HealthReport,
+        context: InsightContext
     ) -> String {
         let spendingLines = SpendingCategory.allCases.compactMap { cat -> String? in
             let total = spending.filter { $0.category == cat }.reduce(0) { $0 + $1.amount }
@@ -101,24 +155,14 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             "\($0.name) \($0.value)\($0.unit) (normal \($0.normalRange), status \($0.status.rawValue))"
         }.joined(separator: "; ")
 
-        let totalSpend = spending.reduce(0) { $0 + $1.amount }
-        let atRiskEstimate = Int(totalSpend * 0.45)
-        let abnormalCount = health.metrics.filter { $0.status != .normal }.count
-        let suggestedRisk = min(95, 40 + abnormalCount * 12)
-
-        let topCats = SpendingCategory.allCases.compactMap { cat -> (String, Int)? in
-            let total = spending.filter { $0.category == cat }.reduce(0) { $0 + $1.amount }
-            guard total > 0 else { return nil }
-            return (cat.rawValue, Int(total))
-        }.sorted { $0.1 > $1.1 }.prefix(2)
-
-        let cat1 = topCats.first.map { "\($0.0) NT$\($0.1)" } ?? "Food Delivery NT$1500"
-        let cat2 = topCats.dropFirst().first.map { "\($0.0) NT$\($0.1)" } ?? "Drinks NT$800"
-        let health1 = health.metrics.first.map { "\($0.name): \($0.value)\($0.unit)" } ?? "Blood Sugar: 110 mg/dL"
-        let health2 = health.metrics.dropFirst().first.map { "\($0.name): \($0.value)\($0.unit)" } ?? "Blood Pressure: 130/85"
-
         print("[InsightGenerator] Prompt data prepared (spendingChars=\(spendingLines.count), healthChars=\(healthLines.count)).")
         logSensitive("[InsightGenerator] Prompt data: spending=\(spendingLines.isEmpty ? "none" : spendingLines); health=\(healthLines.isEmpty ? "none" : healthLines)")
+
+        let finding = { (index: Int) -> String in
+            let frame = context.findings[index]
+            let action = #"{"title":"REPLACE short action","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result"}"#
+            return #"{"causeDetail":"REPLACE one sentence about \#(frame.cause)","risk":"REPLACE one sentence on how it affects \#(frame.metricLabel)","actions":[\#(action),\#(action)]}"#
+        }
 
         return """
         TASK:
@@ -131,7 +175,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
 
         REQUIRED OUTPUT:
         Return one JSON object matching this schema exactly:
-        {"riskScore":\(suggestedRisk),"monthlyAtRisk":\(atRiskEstimate),"actionPlan":{"movement":{"title":"REPLACE movement title","recommendation":"REPLACE with daily walking, jogging, or cycling duration","whyItMatters":"REPLACE with concise may help support language tied to health metrics","targetMetric":"REPLACE metric names","timeframe":"Next 7 days"},"food":{"title":"REPLACE food title","recommendation":"REPLACE with specific delivery, fast food, sugar drink, or grocery swap target","whyItMatters":"REPLACE with concise helps reduce exposure language tied to health metrics","targetMetric":"REPLACE metric names","timeframe":"Next 7 days"}},"findings":[{"icon":"fork.knife","cause":"\(cat1) spending pattern","causeDetail":"REPLACE one sentence","healthImpact":"REPLACE metric name","healthDetail":"REPLACE using \(health1)","risk":"REPLACE one sentence","accentColor":"amber","actions":[{"title":"REPLACE short action 1","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 2","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2}]},{"icon":"moon.fill","cause":"\(cat2) spending pattern","causeDetail":"REPLACE one sentence","healthImpact":"REPLACE metric name","healthDetail":"REPLACE using \(health2)","risk":"REPLACE one sentence","accentColor":"red","actions":[{"title":"REPLACE short action 1","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2},{"title":"REPLACE short action 2","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result","timeframe":"7 days","difficulty":2}]}]}
+        {"actionPlan":{"movement":{"title":"REPLACE movement title","recommendation":"REPLACE with daily walking, jogging, or cycling duration","whyItMatters":"REPLACE with concise may help support language tied to \(context.targetMetric)"},"food":{"title":"REPLACE food title","recommendation":"REPLACE with specific delivery, fast food, sugar drink, or grocery swap target","whyItMatters":"REPLACE with concise helps reduce exposure language tied to \(context.targetMetric)"}},"findings":[\(finding(0)),\(finding(1))]}
 
         RULES:
         Replace every REPLACE value with a concrete sentence based on DATA.
@@ -148,18 +192,18 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         \(userMessage)
 
         RETRY CONSTRAINTS:
-        Your previous response was invalid because it did not contain top-level riskScore, monthlyAtRisk, actionPlan, and findings.
+        Your previous response was invalid because it did not contain top-level actionPlan and findings.
         Output only the required JSON object now.
         The first character must be {.
-        Include actionPlan.movement and actionPlan.food with title, recommendation, whyItMatters, targetMetric, timeframe.
-        The top-level object must contain a non-empty findings array with exactly 2 findings.
-        Each finding must contain exactly 2 concise actions.
+        Include actionPlan.movement and actionPlan.food with title, recommendation, whyItMatters.
+        The top-level object must contain a findings array with exactly 2 findings.
+        Each finding must contain causeDetail, risk, and exactly 2 concise actions.
         """
     }
 
     // MARK: - Parse JSON → InsightResult
 
-    private func parseInsightResult(from text: String, spending: [SpendingEntry], health: HealthReport) throws -> InsightResult {
+    private func parseInsightResult(from text: String, context: InsightContext, health: HealthReport) throws -> InsightResult {
         print("[InsightGenerator] Raw text received (\(text.count) chars).")
         logSensitive("[InsightGenerator] Raw text preview: \(text.prefix(200))")
         let parsed = LenientJSON.parse(text)
@@ -182,25 +226,24 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             throw CactusError.inferenceFailure("Insight response repeated the template. Please regenerate.")
         }
 
-        let riskScore = parseInt(dict["riskScore"]) ?? 65
-        let monthlyAtRisk = parseDouble(dict["monthlyAtRisk"])
-            ?? Double(spending.reduce(0) { $0 + $1.amount } / 2)
-        let findingsArray  = dict["findings"]       as? [[String: Any]] ?? []
-        let actionPlan = parseActionPlan(dict["actionPlan"]) ?? fallbackActionPlan(health: health)
+        let findingsArray = dict["findings"] as? [[String: Any]] ?? []
+        let actionPlan = parseActionPlan(dict["actionPlan"], targetMetric: context.targetMetric)
+            ?? fallbackActionPlan(health: health)
 
-        let findings: [InsightConnection] = findingsArray.compactMap { f in
+        let findings: [InsightConnection] = zip(findingsArray, context.findings).compactMap { f, frame in
             guard
-                let cause         = string(f["cause"]),
-                let causeDetail   = string(f["causeDetail"]),
-                let healthImpact  = string(f["healthImpact"]),
-                let healthDetail  = string(f["healthDetail"]),
-                let risk          = string(f["risk"])
+                let causeDetail = string(f["causeDetail"]),
+                let risk        = string(f["risk"])
             else { return nil }
 
-            let accentColor  = string(f["accentColor"]) ?? "amber"
-            let icon         = string(f["icon"]) ?? "sparkles"
-            let actionsArray = f["actions"] as? [[String: Any]] ?? []
+            // Health facts come from the report, not from the model's wording.
+            let healthImpact = frame.metric?.name ?? frame.metricLabel
+            let healthDetail = frame.metric.map { metric in
+                let range = metric.normalRange.isEmpty ? "" : " (reference \(metric.normalRange))"
+                return "\(metric.name) \(metric.value)\(metric.unit.isEmpty ? "" : " \(metric.unit)") is \(metric.status.rawValue)\(range)."
+            } ?? frame.metricLabel
 
+            let actionsArray = f["actions"] as? [[String: Any]] ?? []
             let actions: [InsightAction] = actionsArray.compactMap { a in
                 guard
                     let title       = string(a["title"]),
@@ -211,23 +254,23 @@ final class OnDeviceInsightGenerator: InsightGenerating {
                     title:           title,
                     description:     description,
                     expectedOutcome: outcome,
-                    timeframe:       string(a["timeframe"]) ?? "7 days",
-                    difficulty:      parseInt(a["difficulty"]) ?? 2
+                    timeframe:       "7 days",
+                    difficulty:      2
                 )
             }
 
             let displayActions = actions.isEmpty
-                ? fallbackActions(cause: cause, healthImpact: healthImpact)
+                ? fallbackActions(cause: frame.cause, healthImpact: healthImpact)
                 : Array(actions.prefix(3))
 
             return InsightConnection(
-                icon:          icon,
-                cause:         cause,
+                icon:          frame.icon,
+                cause:         frame.cause,
                 causeDetail:   causeDetail,
                 healthImpact:  healthImpact,
                 healthDetail:  healthDetail,
                 risk:          risk,
-                accentColor:   accentColor,
+                accentColor:   frame.accentColor,
                 actions:       displayActions
             )
         }
@@ -238,12 +281,12 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             throw CactusError.inferenceFailure("Insight response did not contain valid findings. Please regenerate.")
         }
 
-        print("[InsightGenerator] Parsed \(findings.count) findings, riskScore=\(riskScore), monthlyAtRisk=\(Int(monthlyAtRisk))")
+        print("[InsightGenerator] Parsed \(findings.count) findings, riskScore=\(context.riskScore), monthlyAtRisk=\(Int(context.monthlyAtRisk))")
 
         return InsightResult(
             keyFindings:          findings,
-            overallRiskScore:     riskScore,
-            monthlySpendingAtRisk: monthlyAtRisk,
+            overallRiskScore:     context.riskScore,
+            monthlySpendingAtRisk: context.monthlyAtRisk,
             generatedAt:          Date(),
             actionPlan:           actionPlan
         )
@@ -262,19 +305,6 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         default:
             return nil
         }
-    }
-
-    private func parseInt(_ value: Any?) -> Int? {
-        parseDouble(value).map { Int($0) }
-    }
-
-    /// Accepts numbers and numeric strings such as "1,721" or "NT$1721".
-    private func parseDouble(_ value: Any?) -> Double? {
-        if let number = value as? NSNumber { return number.doubleValue }
-        guard let text = value as? String else { return nil }
-        let digits = text.replacingOccurrences(of: ",", with: "")
-        guard let match = digits.range(of: #"-?\d+(?:\.\d+)?"#, options: .regularExpression) else { return nil }
-        return Double(digits[match])
     }
 
     private func fallbackActions(cause: String, healthImpact: String) -> [InsightAction] {
@@ -296,16 +326,16 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         ]
     }
 
-    private func parseActionPlan(_ value: Any?) -> InsightActionPlan? {
+    private func parseActionPlan(_ value: Any?, targetMetric: String) -> InsightActionPlan? {
         guard let dict = value as? [String: Any],
-              let movement = parsePlanItem(dict["movement"]),
-              let food = parsePlanItem(dict["food"]) else {
+              let movement = parsePlanItem(dict["movement"], targetMetric: targetMetric),
+              let food = parsePlanItem(dict["food"], targetMetric: targetMetric) else {
             return nil
         }
         return InsightActionPlan(movement: movement, food: food)
     }
 
-    private func parsePlanItem(_ value: Any?) -> InsightPlanItem? {
+    private func parsePlanItem(_ value: Any?, targetMetric: String) -> InsightPlanItem? {
         guard
             let dict = value as? [String: Any],
             let title = string(dict["title"]),
@@ -317,8 +347,8 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             title: title,
             recommendation: recommendation,
             whyItMatters: whyItMatters,
-            targetMetric: string(dict["targetMetric"]) ?? "",
-            timeframe: string(dict["timeframe"]) ?? "Next 7 days"
+            targetMetric: targetMetric,
+            timeframe: "Next 7 days"
         )
     }
 

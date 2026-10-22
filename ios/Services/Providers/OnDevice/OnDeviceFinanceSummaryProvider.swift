@@ -73,6 +73,11 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             .map { "- \($0.title): NT$\(Int($0.amount)) [\($0.category.rawValue)]" }
             .joined(separator: "\n")
 
+        // Category names, amounts, icons and the markdown table come from `breakdown` in Swift;
+        // the model only writes the advice text.
+        let impactHints = topCategories(breakdown).map { "\"budget lever for \($0.category.rawValue), maximum 10 words\"" }
+            .joined(separator: ",")
+
         let systemPrompt = """
         You are a concise budget triage engine for a finance app. \
         The spending data is already provided in the user message. Never ask for more data. \
@@ -94,7 +99,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         \(recent)
 
         Complete this JSON using only real values from the data above:
-        {"shortTitle":"3-5 words, no alarm language","quickTake":"one concrete sentence with NT$ amount and percentage, maximum 20 words","primaryAction":"one measurable 7-day action with NT$ target, maximum 16 words","items":[{"icon":"fork.knife","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"},{"icon":"cup.and.saucer.fill","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"},{"icon":"moon.fill","title":"category or behavior","amount":"NT$ amount","impact":"specific budget lever, maximum 10 words"}],"markdownNote":"Markdown only. Include one short paragraph, a 3-row table, and one 7-day checklist. Use concrete NT$ amounts. Maximum 120 words."}
+        {"shortTitle":"3-5 words, no alarm language","quickTake":"one concrete sentence with NT$ amount and percentage, maximum 20 words","primaryAction":"one measurable 7-day action with NT$ target, maximum 16 words","impacts":[\(impactHints)],"note":"one short paragraph with concrete NT$ amounts, maximum 50 words","checklist":["7-day step 1","7-day step 2","7-day step 3"]}
 
         If uncertain, still return the JSON using the category totals. Do not say you need more information.
         """
@@ -102,10 +107,10 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         let text = try await CactusManager.shared.complete(
             systemPrompt: systemPrompt,
             userMessage: userMessage,
-            maxTokens: 650,
+            maxTokens: 500,
             temperature: 0
         )
-        return parseFinanceInsight(from: text, fallback: fallbackInsight(breakdown: breakdown, total: total))
+        return parseFinanceInsight(from: text, breakdown: breakdown, fallback: fallbackInsight(breakdown: breakdown, total: total))
     }
 
     // MARK: - Risk Detection
@@ -154,6 +159,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
 
     private func parseFinanceInsight(
         from text: String,
+        breakdown: [SpendingCategory: Double],
         fallback: FinanceInsightPayload
     ) -> FinanceInsightPayload {
         let parsed = LenientJSON.parse(text)
@@ -166,39 +172,54 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             return fallback
         }
         // The prompt's JSON is a template with instructions as values; a copied template is not an answer.
-        let templateMarkers = ["category or behavior", "NT$ amount\"", "no alarm language", "maximum 20 words"]
+        let templateMarkers = ["maximum 10 words", "no alarm language", "maximum 20 words", "7-day step 1"]
         guard !templateMarkers.contains(where: cleaned.contains) else {
             PerfMonitor.logParseFailure(source: "finance", reason: "placeholders", raw: text, cleaned: cleaned)
             return fallback
         }
 
-        let itemsArray = dict["items"] as? [[String: Any]] ?? []
-        let items = itemsArray.compactMap { item -> FinanceInsightItem? in
-            guard
-                let title = string(item["title"]),
-                let amount = string(item["amount"]),
-                let impact = string(item["impact"])
-            else { return nil }
-            return FinanceInsightItem(
-                icon: string(item["icon"]) ?? "chart.bar.fill",
-                title: title,
-                amount: amount,
-                impact: impact
-            )
+        let impacts = (dict["impacts"] as? [Any] ?? []).compactMap(string)
+        let items = zip(topCategories(breakdown), impacts).map { top, impact in
+            FinanceInsightItem(icon: top.category.icon, title: top.category.rawValue,
+                               amount: "NT$\(Int(top.amount))", impact: impact)
         }
-
         guard !items.isEmpty else {
             PerfMonitor.logParseFailure(source: "finance", reason: "no_valid_items", raw: text, cleaned: cleaned)
             return fallback
         }
 
+        let markdownNote = string(dict["note"]).map { note in
+            let checklist = (dict["checklist"] as? [Any] ?? []).compactMap(string).prefix(3)
+            return Self.markdownNote(paragraph: note, items: items, checklist: Array(checklist))
+        } ?? fallback.markdownNote
+
         return FinanceInsightPayload(
             shortTitle: string(dict["shortTitle"]) ?? fallback.shortTitle,
             quickTake: string(dict["quickTake"]) ?? fallback.quickTake,
             primaryAction: string(dict["primaryAction"]) ?? fallback.primaryAction,
-            items: Array(items.prefix(3)),
-            markdownNote: string(dict["markdownNote"]) ?? fallback.markdownNote
+            items: items,
+            markdownNote: markdownNote
         )
+    }
+
+    /// The three largest categories, which the items and table describe.
+    private func topCategories(_ breakdown: [SpendingCategory: Double]) -> [(category: SpendingCategory, amount: Double)] {
+        breakdown.sorted { $0.value > $1.value }.prefix(3).map { (category: $0.key, amount: $0.value) }
+    }
+
+    /// The "Spendy AI notes" markdown: the model's paragraph, a table built from real amounts,
+    /// and the model's 7-day checklist.
+    private static func markdownNote(paragraph: String, items: [FinanceInsightItem], checklist: [String]) -> String {
+        let rows = items.map { "| \($0.title) | \($0.amount) | \($0.impact) |" }.joined(separator: "\n")
+        let steps = checklist.map { "- \($0)" }.joined(separator: "\n")
+        return """
+        \(paragraph)
+
+        | Focus | Current | Next move |
+        | --- | ---: | --- |
+        \(rows)
+        \(steps.isEmpty ? "" : "\n**7-day checklist:**\n\(steps)")
+        """
     }
 
     /// Non-empty trimmed text; numbers are accepted where the schema expects strings.

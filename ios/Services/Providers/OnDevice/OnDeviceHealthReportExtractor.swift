@@ -6,8 +6,8 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
 
     var isModelReady: Bool { CactusManager.shared.isReady }
 
-    /// Verified vision metrics needed to skip the OCR-text structuring pass.
-    private let preferredMinimumMetricCount = 5
+    /// Fewer metrics than this from OCR moves on to the next fallback.
+    private let minimumMetricCount = 2
 
     private func logSensitive(_ message: @autoclosure () -> String) {
         #if SPENDY_VERBOSE_LOGS
@@ -35,24 +35,17 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
     }
 
-    /// Vision first, cross-checked by OCR:
-    /// 1. Gemma 4 vision reads the image.
-    /// 2. Apple Vision OCR reads the same image (the model stays loaded).
-    /// 3. A vision value is kept only if OCR read it on the metric's own table row.
-    /// 4. With fewer than `preferredMinimumMetricCount` confirmed, Gemma 4 structures the
-    ///    OCR text and the results are merged; the rule-based OCR parser is the last resort.
+    /// OCR first; Gemma 4 vision only as a fallback:
+    /// 1. Apple Vision OCR reads the image.
+    /// 2. Gemma 4 structures the OCR text; known metrics read straight from OCR table rows
+    ///    fill keys it left out; the rule-based OCR parser covers fewer than 2 results.
+    /// 3. Gemma 4 vision runs only if that still finds fewer than 2 metrics, and its values are
+    ///    kept only if OCR read them on the metric's own row. On a full page Cactus's fixed
+    ///    pixel budget leaves table text about 6 px tall and vision fills gaps with typical
+    ///    values (bench/experiments.md), so it is never trusted unverified while OCR has text.
+    /// 4. If OCR fails outright, vision results are shown labelled as not verified.
     /// Status, reference range and evidence trace are decided in `HealthReportVerifier`.
     private func extractHealthReportImpl(imageData: Data) async throws -> HealthReport {
-        var visionCandidates: [MetricCandidate] = []
-        if isModelReady {
-            do {
-                print("[HealthExtractor] Trying Gemma 4 vision extraction...")
-                visionCandidates = try await runVisionInference(imageData: imageData)
-            } catch {
-                print("[HealthExtractor] Gemma 4 vision failed: \(error.localizedDescription)")
-            }
-        }
-
         let lines: [OCRLine]
         do {
             lines = try await withTimeout(seconds: 8) {
@@ -60,10 +53,17 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
             }
         } catch {
             print("[HealthExtractor] Apple Vision OCR failed: \(error.localizedDescription)")
-            let metrics = HealthReportVerifier.unverified(visionCandidates)
-            logVerification(path: "vision_unverified", vision: visionCandidates.count, visionVerified: 0, text: 0, final: metrics.count)
+            let visionCandidates = await visionCandidatesIfReady(imageData: imageData)
+            let metrics = HealthReportVerifier.unverified(visionCandidates ?? [])
+            logVerification(path: "vision_unverified", visionRan: visionCandidates != nil, vision: visionCandidates?.count ?? 0,
+                            visionVerified: 0, text: 0, final: metrics.count)
             guard !metrics.isEmpty else { throw error }
             return makeReport(metrics, labName: "Gemma 4 Vision (not verified by OCR)")
+        }
+        guard !lines.isEmpty else {
+            // Nothing to verify against: vision values would be unchecked guesses.
+            logVerification(path: "no_text", visionRan: false, vision: 0, visionVerified: 0, text: 0, final: 0)
+            throw CactusError.inferenceFailure("No report text was found in the selected image.")
         }
         let ocrText = lines.map(\.text).joined(separator: "\n")
         print("[HealthExtractor] OCR text recognized (\(lines.count) lines, \(ocrText.count) chars).")
@@ -71,22 +71,9 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
             String(format: "y=%.4f h=%.4f | ", $0.midY, $0.height) + $0.text
         }.joined(separator: "\n"))
 
-        // Known metrics read directly from OCR table rows; they only fill keys the models
+        // Known metrics read directly from OCR table rows; they only fill keys the model
         // left out (the text model can stop before the results table, e.g. IMG_9603).
         let tableMetrics = HealthReportVerifier.verify(HealthReportVerifier.tableCandidates(lines: lines), lines: lines, requireSameRow: true)
-        func fillFromTable(_ metrics: [VerifiedMetric]) -> [VerifiedMetric] {
-            let keys = Set(metrics.map(\.key))
-            return metrics + tableMetrics.filter { !keys.contains($0.key) }
-        }
-
-        let verifiedVision = HealthReportVerifier.verify(visionCandidates, lines: lines, requireSameRow: true)
-        print("[HealthExtractor] OCR confirmed \(verifiedVision.count) of \(visionCandidates.count) Gemma 4 vision metrics.")
-        if verifiedVision.count >= preferredMinimumMetricCount {
-            let metrics = fillFromTable(verifiedVision)
-            logVerification(path: "vision_verified", vision: visionCandidates.count, visionVerified: verifiedVision.count, text: 0,
-                            tableFilled: metrics.count - verifiedVision.count, final: metrics.count)
-            return makeReport(metrics, labName: "Gemma 4 Vision · verified by OCR")
-        }
 
         var textCandidates: [MetricCandidate] = []
         if isModelReady {
@@ -99,14 +86,12 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
         let verifiedText = HealthReportVerifier.verify(textCandidates, lines: lines, requireSameRow: false)
         let textKeys = Set(verifiedText.map(\.key))
-        let modelMetrics = verifiedText + verifiedVision.filter { !textKeys.contains($0.key) }
-        var metrics = fillFromTable(modelMetrics)
-        var tableFilled = metrics.count - modelMetrics.count
-        let visionContributed = metrics.contains { metric in verifiedVision.contains { $0.key == metric.key } && !textKeys.contains(metric.key) }
-        var path = visionContributed ? "vision_plus_ocr_text" : "ocr_text"
-        var labName = visionContributed ? "Gemma 4 Vision + OCR" : "Apple Vision OCR + Gemma 4"
+        var metrics = verifiedText + tableMetrics.filter { !textKeys.contains($0.key) }
+        var tableFilled = metrics.count - verifiedText.count
+        var path = "ocr_text"
+        var labName = isModelReady ? "Apple Vision OCR + Gemma 4" : "Extracted by Apple Vision OCR"
 
-        if metrics.count < 2 {
+        if metrics.count < minimumMetricCount {
             let ruleCandidates = ruleBasedCandidates(fromOCR: ocrText)
             let verifiedRules = HealthReportVerifier.verify(ruleCandidates, lines: lines, requireSameRow: false)
             if verifiedRules.count > metrics.count {
@@ -118,16 +103,44 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
             }
         }
 
-        logVerification(path: path, vision: visionCandidates.count, visionVerified: verifiedVision.count, text: verifiedText.count,
-                        tableFilled: tableFilled, final: metrics.count)
+        var visionCandidates: [MetricCandidate]? = nil
+        var verifiedVisionCount = 0
+        if metrics.count < minimumMetricCount {
+            visionCandidates = await visionCandidatesIfReady(imageData: imageData)
+            let verifiedVision = HealthReportVerifier.verify(visionCandidates ?? [], lines: lines, requireSameRow: true)
+            verifiedVisionCount = verifiedVision.count
+            print("[HealthExtractor] OCR confirmed \(verifiedVision.count) of \(visionCandidates?.count ?? 0) Gemma 4 vision metrics.")
+            let keys = Set(metrics.map(\.key))
+            let added = verifiedVision.filter { !keys.contains($0.key) }
+            if !added.isEmpty {
+                metrics += added
+                path = "vision_fallback"
+                labName = "Gemma 4 Vision · verified by OCR"
+            }
+        }
+
+        logVerification(path: path, visionRan: visionCandidates != nil, vision: visionCandidates?.count ?? 0,
+                        visionVerified: verifiedVisionCount, text: verifiedText.count, tableFilled: tableFilled, final: metrics.count)
         guard !metrics.isEmpty else {
             throw CactusError.inferenceFailure("No health metrics were found in the selected image.")
         }
         return makeReport(metrics, labName: labName)
     }
 
-    private func logVerification(path: String, vision: Int, visionVerified: Int, text: Int, tableFilled: Int = 0, final: Int) {
-        PerfMonitor.log("scan_verification", "path=\(path) vision_metrics=\(vision) vision_verified=\(visionVerified) text_verified=\(text) table_filled=\(tableFilled) final=\(final)")
+    /// Gemma 4 vision candidates, or nil when the model is not loaded (vision did not run).
+    private func visionCandidatesIfReady(imageData: Data) async -> [MetricCandidate]? {
+        guard isModelReady else { return nil }
+        do {
+            print("[HealthExtractor] Trying Gemma 4 vision extraction...")
+            return try await runVisionInference(imageData: imageData)
+        } catch {
+            print("[HealthExtractor] Gemma 4 vision failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    private func logVerification(path: String, visionRan: Bool, vision: Int, visionVerified: Int, text: Int, tableFilled: Int = 0, final: Int) {
+        PerfMonitor.log("scan_verification", "path=\(path) vision_ran=\(visionRan) vision_metrics=\(vision) vision_verified=\(visionVerified) text_verified=\(text) table_filled=\(tableFilled) final=\(final)")
     }
 
     private func makeReport(_ metrics: [VerifiedMetric], labName: String) -> HealthReport {
@@ -241,28 +254,21 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         Output JSON only. Do not output markdown, headings, prose, summaries, or code fences.
         """
 
+        // Name, value and unit only: status, reference range and evidence are decided in
+        // HealthReportVerifier, so asking the model for them only adds decode time.
         let userMessage = """
-        Extract all visible health metrics from this report image.
+        Extract every lab test result visible in this report image.
 
         Return exactly one JSON object using this schema:
-        {
-          "metrics": [
-            {"name":"Blood Pressure","value":"138/89","unit":"mmHg","normalRange":"< 120/80","status":"High"}
-          ],
-          "evidenceTrace": [
-            "Blood Pressure 138/89 mmHg is above < 120/80, so it is flagged High."
-          ]
-        }
+        {"metrics":[{"name":"Blood Pressure","value":"138/89","unit":"mmHg"}]}
 
-        For each metric provide:
-        - name in English
-        - value as a numeric string
-        - unit such as mg/dL, mmHg, %, g/L, 10^9/L
-        - normalRange if visible or inferable from the report
-        - status: "Normal", "Borderline", or "High"
+        For each result provide:
+        - name: the test name in English
+        - value: the result as a numeric string
+        - unit: as printed, or "" if there is none
 
-        In evidenceTrace, write 2-5 concise patient-friendly bullets explaining which values were read and why they were flagged.
-        If you cannot read the image or find no metrics, return {"metrics":[],"evidenceTrace":[]}
+        Do not include reference ranges or flags as values.
+        If you cannot read the image or find no results, return {"metrics":[]}
 
         The first character of your response must be { and the last character must be }.
         """
@@ -271,7 +277,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
             systemPrompt: systemPrompt,
             userMessage: userMessage,
             imageData: imageData,
-            maxTokens: 1_200
+            maxTokens: 800
         )
         return parseCandidates(from: rawText, perfSource: "health_vision")
     }
@@ -285,30 +291,22 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         Respond ONLY with one valid JSON object using the requested schema. No explanation, no markdown.
         """
 
+        // Name, value and unit only; see runVisionInference.
         let userMessage = """
-        Return this exact JSON structure:
-        {
-          "metrics": [
-            {"name":"Blood Pressure","value":"138/89","unit":"mmHg","normalRange":"< 120/80","status":"High"}
-          ],
-          "evidenceTrace": [
-            "Blood Pressure 138/89 mmHg is above < 120/80, so it is flagged High."
-          ]
-        }
+        Return one JSON object with this structure:
+        {"metrics":[{"name":"Blood Pressure","value":"138/89","unit":"mmHg"}]}
 
-        For each metric provide:
+        For each lab value or health marker in the OCR text provide:
         - name (in English)
         - value (numeric string)
-        - unit (e.g. mg/dL, mmHg, %)
-        - normalRange (e.g. < 100, 18.5–24, > 40)
-        - status: "Normal", "Borderline", or "High"
+        - unit (e.g. mg/dL, mmHg, %), or "" if there is none
+        - Include every row of a results table.
+        - Do not include reference ranges or flags as values.
         - Ignore report section numbers, dates, patient IDs, phone numbers, specimen IDs, and client information.
         - Do not return patient profile fields such as name, age, gender, weight, or height.
         - If you are unsure whether a number belongs to a health metric, omit it.
-        - Keep only metrics that are clearly lab values or health markers.
 
-        In evidenceTrace, write 2-5 concise patient-friendly bullets explaining which values were read and why they were flagged.
-        If you cannot read the image or find no metrics, return {"metrics":[],"evidenceTrace":[]}
+        If you find no metrics, return {"metrics":[]}
 
         OCR TEXT:
         \(ocrText)
@@ -317,7 +315,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         let rawText = try await CactusManager.shared.complete(
             systemPrompt: systemPrompt,
             userMessage: userMessage,
-            maxTokens: 1_600,
+            maxTokens: 1_000,
             temperature: 0
         )
         return parseCandidates(from: rawText, perfSource: "health_ocr_text")
