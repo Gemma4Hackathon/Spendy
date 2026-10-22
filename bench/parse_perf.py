@@ -92,12 +92,18 @@ def main():
         print("\n== json_repair (parsed after repair?)")
         for (source, parsed), n in sorted(repairs.items()):
             print(f"  {source:<22} parsed={parsed:<12} {n}")
+    guards = [r for r in rows if r["event"] == "guardrail"]
+    if guards:
+        print("\n== guardrail (model sentences replaced by Swift text)")
+        for r in guards:
+            print(f"  {r.get('source', '?'):<10} checked={r.get('checked')} replaced={r.get('replaced')} reasons={r.get('reasons')}")
     scans = [r for r in rows if r["event"] == "scan_verification"]
     if scans:
         print("\n== scan_verification")
         for r in scans:
             print(f"  path={r.get('path'):<22} vision_ran={r.get('vision_ran', 'na')} vision={r.get('vision_metrics')} vision_verified={r.get('vision_verified')}"
-                  f" text_verified={r.get('text_verified')} table_filled={r.get('table_filled', 'na')} final={r.get('final')}")
+                  f" text_verified={r.get('text_verified')} table_filled={r.get('table_filled', 'na')} final={r.get('final')}"
+                  f" prompt_lines={r.get('prompt_lines', 'na')} prompt_chars={r.get('prompt_chars', 'na')} text_model_ran={r.get('text_model_ran', 'na')}")
 
 if __name__ == "__main__":
     main()
