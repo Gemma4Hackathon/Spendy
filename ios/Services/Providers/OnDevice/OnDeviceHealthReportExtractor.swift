@@ -70,13 +70,22 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
 
         // Known metrics read directly from OCR table rows; they only fill keys the model
         // left out (the text model can stop before the results table, e.g. IMG_9603).
-        let tableMetrics = HealthReportVerifier.verify(HealthReportVerifier.tableCandidates(lines: lines), lines: lines, requireSameRow: true)
+        let readings = HealthReportVerifier.tableReadings(lines: lines)
+        let tableMetrics = HealthReportVerifier.verify(readings.map(\.candidate), lines: lines, requireSameRow: true)
 
+        // Gemma 4 gets only what Swift has not read: verified table rows, flags, ranges and
+        // patient details are left out of the prompt (prefill dominates scan time).
+        let consumed = Set(readings.filter { reading in
+            tableMetrics.contains { $0.name == reading.candidate.name && $0.value == reading.candidate.value }
+        }.flatMap(\.lineIndices))
+        let prompt = OCRPromptBuilder.modelInput(lines: lines, consumed: consumed)
+
+        let textModelRuns = isModelReady && prompt.hasNumbers
         var textCandidates: [MetricCandidate] = []
-        if isModelReady {
+        if textModelRuns {
             do {
-                print("[HealthExtractor] Structuring OCR text with Gemma 4...")
-                textCandidates = try await runTextInference(ocrText: ocrText)
+                print("[HealthExtractor] Structuring OCR text with Gemma 4 (\(prompt.keptLines) of \(prompt.totalLines) lines)...")
+                textCandidates = try await runTextInference(ocrText: prompt.text)
             } catch {
                 print("[HealthExtractor] Gemma 4 text structuring failed: \(error.localizedDescription)")
             }
@@ -86,7 +95,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         var metrics = verifiedText + tableMetrics.filter { !textKeys.contains($0.key) }
         var tableFilled = metrics.count - verifiedText.count
         var path = "ocr_text"
-        var labName = isModelReady ? "Apple Vision OCR + Gemma 4" : "Extracted by Apple Vision OCR"
+        var labName = textModelRuns ? "Apple Vision OCR + Gemma 4" : "Extracted by Apple Vision OCR"
 
         if metrics.count < minimumMetricCount {
             let ruleCandidates = ruleBasedCandidates(fromOCR: ocrText)
@@ -117,7 +126,8 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
 
         logVerification(path: path, visionRan: visionCandidates != nil, vision: visionCandidates?.count ?? 0,
-                        visionVerified: verifiedVisionCount, text: verifiedText.count, tableFilled: tableFilled, final: metrics.count)
+                        visionVerified: verifiedVisionCount, text: verifiedText.count, tableFilled: tableFilled, final: metrics.count,
+                        prompt: prompt)
         guard !metrics.isEmpty else {
             throw CactusError.inferenceFailure("No health metrics were found in the selected image.")
         }
@@ -136,8 +146,10 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
     }
 
-    private func logVerification(path: String, visionRan: Bool, vision: Int, visionVerified: Int, text: Int, tableFilled: Int = 0, final: Int) {
-        PerfMonitor.log("scan_verification", "path=\(path) vision_ran=\(visionRan) vision_metrics=\(vision) vision_verified=\(visionVerified) text_verified=\(text) table_filled=\(tableFilled) final=\(final)")
+    private func logVerification(path: String, visionRan: Bool, vision: Int, visionVerified: Int, text: Int, tableFilled: Int = 0,
+                                 final: Int, prompt: OCRPromptBuilder.Input? = nil) {
+        let promptFields = prompt.map { " prompt_lines=\($0.keptLines)/\($0.totalLines) prompt_chars=\($0.text.count) text_model_ran=\($0.hasNumbers && isModelReady)" } ?? ""
+        PerfMonitor.log("scan_verification", "path=\(path) vision_ran=\(visionRan) vision_metrics=\(vision) vision_verified=\(visionVerified) text_verified=\(text) table_filled=\(tableFilled) final=\(final)\(promptFields)")
     }
 
     private func makeReport(_ metrics: [VerifiedMetric], labName: String) -> HealthReport {
@@ -464,7 +476,9 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
 
         let candidates = parseHealthPayload(object).compactMap(MetricCandidate.init(json:))
-        if candidates.isEmpty {
+        // `{"metrics":[]}` is a valid answer (nothing left to structure), not a failure.
+        let answeredEmpty = ((object as? [String: Any])?["metrics"] as? [Any])?.isEmpty == true
+        if candidates.isEmpty && !answeredEmpty {
             print("[HealthExtractor] No metrics in model JSON (\(type(of: object))).")
             PerfMonitor.logParseFailure(source: perfSource, reason: "no_metrics", raw: text, cleaned: result.candidate)
         }

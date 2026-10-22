@@ -98,13 +98,20 @@ nonisolated enum HealthReportVerifier {
         return result
     }
 
+    /// A known metric read from a table row, with the OCR lines it came from.
+    struct TableReading {
+        let candidate: MetricCandidate
+        /// Indices into the OCR lines: the label line and the reading line.
+        let lineIndices: [Int]
+    }
+
     /// Reads known metrics straight from table rows: a line naming a metric plus, on the
     /// same row, a line that starts with its reading ("115 mg/dL"). Reference-range lines
     /// and implausible readings (OCR "2.0" -> "20" for a ratio) are skipped. Used to fill
     /// rows the text model left out; results still go through `verify`.
     /// A key can get several candidates; `verify` keeps the first one confirmed on its row.
-    static func tableCandidates(lines: [OCRLine]) -> [MetricCandidate] {
-        var result: [MetricCandidate] = []
+    static func tableReadings(lines: [OCRLine]) -> [TableReading] {
+        var result: [TableReading] = []
         for (labelIndex, label) in lines.enumerated() {
             guard isNameLine(label.text),
                   let reference = Reference.match(tokens(label.text)),
@@ -113,20 +120,24 @@ nonisolated enum HealthReportVerifier {
 
             let readings = lines.indices
                 .filter { $0 != labelIndex && abs(lines[$0].midY - label.midY) < 0.6 * max(lines[$0].height, label.height) }
-                .map { lines[$0] }
-                .filter { $0.text.trimmingCharacters(in: .whitespaces).first?.isNumber == true && rangeExpression(in: $0.text) == nil }
-                .compactMap { line -> (distance: Double, value: String)? in
-                    guard let token = standaloneNumberTokens(in: line.text).first,
+                .filter { lines[$0].text.trimmingCharacters(in: .whitespaces).first?.isNumber == true && rangeExpression(in: lines[$0].text) == nil }
+                .compactMap { index -> (distance: Double, value: String, index: Int)? in
+                    guard let token = standaloneNumberTokens(in: lines[index].text).first,
                           let number = Double(token), plausible.contains(number)
                     else { return nil }
-                    return (abs(line.midY - label.midY), token)
+                    return (abs(lines[index].midY - label.midY), token, index)
                 }
             guard let closest = readings.min(by: { $0.distance < $1.distance }) else { continue }
 
-            result.append(MetricCandidate(name: reference.displayName, value: closest.value,
-                                          unit: "", normalRange: "", modelStatus: nil))
+            let candidate = MetricCandidate(name: reference.displayName, value: closest.value,
+                                            unit: "", normalRange: "", modelStatus: nil)
+            result.append(TableReading(candidate: candidate, lineIndices: [labelIndex, closest.index]))
         }
         return result
+    }
+
+    static func tableCandidates(lines: [OCRLine]) -> [MetricCandidate] {
+        tableReadings(lines: lines).map(\.candidate)
     }
 
     /// Readings outside these are OCR errors, not results. Blood pressure is left out:

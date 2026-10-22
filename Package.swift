@@ -17,6 +17,7 @@ let package = Package(
                 "Services/Providers/OnDevice/LenientJSON.swift",
                 "Services/Providers/OnDevice/HealthReportVerifier.swift",
                 "Services/Providers/OnDevice/SpendingTargets.swift",
+                "Services/Providers/OnDevice/OCRPromptBuilder.swift",
             ]
         ),
         .testTarget(
