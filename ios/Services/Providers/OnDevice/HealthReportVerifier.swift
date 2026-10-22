@@ -96,6 +96,46 @@ nonisolated enum HealthReportVerifier {
         return result
     }
 
+    /// Reads known metrics straight from table rows: a line naming a metric plus, on the
+    /// same row, a line that starts with its reading ("115 mg/dL"). Reference-range lines
+    /// and implausible readings (OCR "2.0" -> "20" for a ratio) are skipped. Used to fill
+    /// rows the text model left out; results still go through `verify`.
+    static func tableCandidates(lines: [OCRLine]) -> [MetricCandidate] {
+        var seenKeys = Set<String>()
+        var result: [MetricCandidate] = []
+        for (labelIndex, label) in lines.enumerated() {
+            guard let reference = Reference.match(tokens(label.text)),
+                  let plausible = plausibleReadings[reference.key],
+                  !seenKeys.contains(reference.key)
+            else { continue }
+
+            let readings = lines.indices
+                .filter { $0 != labelIndex && abs(lines[$0].midY - label.midY) < 0.6 * max(lines[$0].height, label.height) }
+                .map { lines[$0] }
+                .filter { $0.text.trimmingCharacters(in: .whitespaces).first?.isNumber == true && rangeExpression(in: $0.text) == nil }
+                .compactMap { line -> (distance: Double, value: String)? in
+                    guard let token = standaloneNumberTokens(in: line.text).first,
+                          let number = Double(token), plausible.contains(number)
+                    else { return nil }
+                    return (abs(line.midY - label.midY), token)
+                }
+            guard let closest = readings.min(by: { $0.distance < $1.distance }) else { continue }
+
+            seenKeys.insert(reference.key)
+            result.append(MetricCandidate(name: reference.displayName, value: closest.value,
+                                          unit: "", normalRange: "", modelStatus: nil))
+        }
+        return result
+    }
+
+    /// Readings outside these are OCR errors, not results. Blood pressure is left out:
+    /// table rows split it into systolic and diastolic lines.
+    private static let plausibleReadings: [String: ClosedRange<Double>] = [
+        "hba1c": 3...20, "glucose": 20...700, "chol_hdl_ratio": 0.5...15, "non_hdl": 20...400,
+        "ldl": 10...400, "hdl": 5...200, "triglycerides": 10...3000, "total_cholesterol": 50...600,
+        "bmi": 10...80, "hemoglobin": 3...250, "platelets": 10...1500
+    ]
+
     /// Used when OCR found no text: nothing to check against, so values are kept as read.
     static func unverified(_ candidates: [MetricCandidate]) -> [VerifiedMetric] {
         var seenKeys = Set<String>()
@@ -244,8 +284,13 @@ nonisolated enum HealthReportVerifier {
     /// Numbers that stand as a reading on their own: not part of a word ("A1c"),
     /// not a range bound ("<150", "65-99", ">OR=46"), not a fraction part ("120/80").
     static func standaloneNumbers(in text: String) -> [Double] {
+        standaloneNumberTokens(in: text).compactMap(Double.init)
+    }
+
+    /// `standaloneNumbers` as written in the text, so "2.0" keeps its decimal.
+    private static func standaloneNumberTokens(in text: String) -> [String] {
         let characters = Array(text)
-        var numbers: [Double] = []
+        var numbers: [String] = []
         var index = 0
         while index < characters.count {
             guard characters[index].isNumber else { index += 1; continue }
@@ -264,8 +309,8 @@ nonisolated enum HealthReportVerifier {
             let rangeBound = previousNonSpace.map { "<>=≤≥-–/".contains($0) } ?? false
             let rangeStart = nextNonSpace.map { "-–/".contains($0) } ?? false
 
-            if !attachedToWord, !rangeBound, !rangeStart, let number = Double(token) {
-                numbers.append(number)
+            if !attachedToWord, !rangeBound, !rangeStart, Double(token) != nil {
+                numbers.append(token)
             }
         }
         return numbers

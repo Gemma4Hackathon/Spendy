@@ -71,11 +71,21 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
             String(format: "y=%.4f h=%.4f | ", $0.midY, $0.height) + $0.text
         }.joined(separator: "\n"))
 
+        // Known metrics read directly from OCR table rows; they only fill keys the models
+        // left out (the text model can stop before the results table, e.g. IMG_9603).
+        let tableMetrics = HealthReportVerifier.verify(HealthReportVerifier.tableCandidates(lines: lines), lines: lines, requireSameRow: true)
+        func fillFromTable(_ metrics: [VerifiedMetric]) -> [VerifiedMetric] {
+            let keys = Set(metrics.map(\.key))
+            return metrics + tableMetrics.filter { !keys.contains($0.key) }
+        }
+
         let verifiedVision = HealthReportVerifier.verify(visionCandidates, lines: lines, requireSameRow: true)
         print("[HealthExtractor] OCR confirmed \(verifiedVision.count) of \(visionCandidates.count) Gemma 4 vision metrics.")
         if verifiedVision.count >= preferredMinimumMetricCount {
-            logVerification(path: "vision_verified", vision: visionCandidates.count, visionVerified: verifiedVision.count, text: 0, final: verifiedVision.count)
-            return makeReport(verifiedVision, labName: "Gemma 4 Vision · verified by OCR")
+            let metrics = fillFromTable(verifiedVision)
+            logVerification(path: "vision_verified", vision: visionCandidates.count, visionVerified: verifiedVision.count, text: 0,
+                            tableFilled: metrics.count - verifiedVision.count, final: metrics.count)
+            return makeReport(metrics, labName: "Gemma 4 Vision · verified by OCR")
         }
 
         var textCandidates: [MetricCandidate] = []
@@ -89,7 +99,9 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         }
         let verifiedText = HealthReportVerifier.verify(textCandidates, lines: lines, requireSameRow: false)
         let textKeys = Set(verifiedText.map(\.key))
-        var metrics = verifiedText + verifiedVision.filter { !textKeys.contains($0.key) }
+        let modelMetrics = verifiedText + verifiedVision.filter { !textKeys.contains($0.key) }
+        var metrics = fillFromTable(modelMetrics)
+        var tableFilled = metrics.count - modelMetrics.count
         let visionContributed = metrics.contains { metric in verifiedVision.contains { $0.key == metric.key } && !textKeys.contains(metric.key) }
         var path = visionContributed ? "vision_plus_ocr_text" : "ocr_text"
         var labName = visionContributed ? "Gemma 4 Vision + OCR" : "Apple Vision OCR + Gemma 4"
@@ -100,20 +112,22 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
             if verifiedRules.count > metrics.count {
                 print("[HealthExtractor] Using rule-based OCR parser (\(verifiedRules.count) metrics).")
                 metrics = verifiedRules
+                tableFilled = 0
                 path = "ocr_rules"
                 labName = "Extracted by Apple Vision OCR"
             }
         }
 
-        logVerification(path: path, vision: visionCandidates.count, visionVerified: verifiedVision.count, text: verifiedText.count, final: metrics.count)
+        logVerification(path: path, vision: visionCandidates.count, visionVerified: verifiedVision.count, text: verifiedText.count,
+                        tableFilled: tableFilled, final: metrics.count)
         guard !metrics.isEmpty else {
             throw CactusError.inferenceFailure("No health metrics were found in the selected image.")
         }
         return makeReport(metrics, labName: labName)
     }
 
-    private func logVerification(path: String, vision: Int, visionVerified: Int, text: Int, final: Int) {
-        PerfMonitor.log("scan_verification", "path=\(path) vision_metrics=\(vision) vision_verified=\(visionVerified) text_verified=\(text) final=\(final)")
+    private func logVerification(path: String, vision: Int, visionVerified: Int, text: Int, tableFilled: Int = 0, final: Int) {
+        PerfMonitor.log("scan_verification", "path=\(path) vision_metrics=\(vision) vision_verified=\(visionVerified) text_verified=\(text) table_filled=\(tableFilled) final=\(final)")
     }
 
     private func makeReport(_ metrics: [VerifiedMetric], labName: String) -> HealthReport {
