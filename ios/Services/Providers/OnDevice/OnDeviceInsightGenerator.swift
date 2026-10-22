@@ -103,6 +103,8 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         let riskScore: Int
         let monthlyAtRisk: Double
         let findings: [Finding]
+        /// Weekly pace, cap and saving per finding category, computed in Swift.
+        let weeklyTargets: [String]
         /// Abnormal metric names for the action plan, e.g. "Glucose, Hemoglobin A1c".
         let targetMetric: String
 
@@ -123,6 +125,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             let topCats = (byAmount.filter { dietRelated.contains($0.category) } + byAmount.filter { !dietRelated.contains($0.category) })
                 .prefix(2)
                 .map { ($0.category.rawValue, $0.total) }
+            weeklyTargets = topCats.map { SpendingTargets.summary(category: $0.0, monthlyAmount: Double($0.1)) }
             let cat1 = topCats.first.map { "\($0.0) NT$\($0.1)" } ?? "Food Delivery NT$1500"
             let cat2 = topCats.dropFirst().first.map { "\($0.0) NT$\($0.1)" } ?? "Drinks NT$800"
 
@@ -178,6 +181,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         User: \(profile.age)yo \(profile.gender), BMI \(String(format: "%.1f", profile.bmi)).
         Spending categories: \(spendingLines).
         Health metrics: \(healthLines).
+        Weekly targets: \(context.weeklyTargets.joined(separator: "; ")).
 
         REQUIRED OUTPUT:
         Return one JSON object matching this schema exactly:
@@ -186,6 +190,8 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         RULES:
         Replace every REPLACE value with a concrete sentence based on DATA.
         Every action title must start with a verb and include either a frequency, limit, or NT$ target.
+        Use the Weekly targets for every NT$ cap and saving. Never set a category to zero.
+        A 7-day saving is the weekly saving in Weekly targets, never a monthly total.
         Every action description must connect the spending behavior to the health metric.
         Every expectedOutcome must be a spending or habit result measurable in 7 days (NT$ saved, drinks or orders skipped, minutes walked), never a change in a lab value or a diagnosis.
         Every risk sentence must say the habit may contribute, not that it caused the lab value.

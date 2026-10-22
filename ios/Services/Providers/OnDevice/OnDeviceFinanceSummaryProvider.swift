@@ -76,7 +76,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         // Every number shown (amounts, weekly caps, the table) is computed in Swift; the model
         // only writes sentences. It miscalculated caps (NT$765/week for NT$800/month).
         let top = topCategories(breakdown).first
-        let capHint = top.map { "keeps \($0.category.rawValue) under NT$\(Self.weeklyCap($0.amount))/week" } ?? "sets a weekly NT$ cap"
+        let capHint = top.map { "keeps \($0.category.rawValue) under NT$\(SpendingTargets.weeklyCap($0.amount))/week" } ?? "sets a weekly NT$ cap"
 
         let systemPrompt = """
         You are a concise budget triage engine for a finance app. \
@@ -199,11 +199,6 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         )
     }
 
-    /// A weekly cap 25 % below the current monthly pace, at least NT$100.
-    private static func weeklyCap(_ monthlyAmount: Double) -> Int {
-        max(100, Int(monthlyAmount * 0.75 / 4))
-    }
-
     /// The three largest categories, which the items and table describe.
     private func topCategories(_ breakdown: [SpendingCategory: Double]) -> [(category: SpendingCategory, amount: Double)] {
         breakdown.sorted { $0.value > $1.value }.prefix(3).map { (category: $0.key, amount: $0.value) }
@@ -242,7 +237,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         total: Double
     ) -> FinanceInsightPayload {
         let topItems = breakdown.sorted { $0.value > $1.value }.prefix(3).map { category, amount in
-            let weeklyTarget = Self.weeklyCap(amount)
+            let weeklyTarget = SpendingTargets.weeklyCap(amount)
             let monthlyTrim = max(100, Int(amount * 0.20))
             return FinanceInsightItem(
                 icon: category.icon,
@@ -255,7 +250,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         let topCategory = sorted.first?.key.rawValue ?? "Spending"
         let topAmount = sorted.first?.value ?? total
         let topShare = total > 0 ? Int((topAmount / total) * 100) : 0
-        let weeklyTarget = Self.weeklyCap(topAmount)
+        let weeklyTarget = SpendingTargets.weeklyCap(topAmount)
         return FinanceInsightPayload(
             shortTitle: "Spending focus this week",
             quickTake: "\(topCategory) leads tracked spending at NT$\(Int(topAmount)), about \(topShare)% of this month.",
