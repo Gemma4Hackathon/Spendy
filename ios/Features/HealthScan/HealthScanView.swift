@@ -10,17 +10,13 @@ struct HealthScanView: View {
     @State private var pulseScale: CGFloat = 1.0
     @State private var appeared = false
     @State private var navigateToResults = false
-    @State private var scanStage: ScanStage = .idle
+    /// The pipeline stage reported by the extractor; nil before it starts.
+    @State private var stage: HealthScanStage? = nil
+    /// The stage that was running when the scan failed.
+    @State private var failedStage: HealthScanStage? = nil
+    @State private var visionUsed = false
     @State private var fallbackMessage: String? = nil
     @State private var showCameraPicker = false
-
-    private enum ScanStage {
-        case idle
-        case readingImage
-        case extractingMarkers
-        case preparingResults
-        case failed
-    }
 
     var body: some View {
         ZStack {
@@ -124,7 +120,7 @@ struct HealthScanView: View {
                         if UIImagePickerController.isSourceTypeAvailable(.camera) {
                             showCameraPicker = true
                         } else {
-                            scanStage = .failed
+                            failedStage = .readingText
                             fallbackMessage = "Camera is not available on this device. Choose an image from your library instead."
                         }
                     } label: {
@@ -180,25 +176,10 @@ struct HealthScanView: View {
 
     private var scanProgressCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionHeader("Scan Progress", subtitle: "Local image extraction")
-            ProgressStepRow(
-                index: 1,
-                title: "Read image",
-                detail: "Preparing the selected report photo.",
-                state: stepState(for: .readingImage)
-            )
-            ProgressStepRow(
-                index: 2,
-                title: "Extract markers",
-                detail: "Trying Gemma 4 vision first; Apple Vision OCR is fallback.",
-                state: stepState(for: .extractingMarkers)
-            )
-            ProgressStepRow(
-                index: 3,
-                title: "Prepare results",
-                detail: "Formatting metrics and evidence trace for review.",
-                state: stepState(for: .preparingResults)
-            )
+            SectionHeader("Scan Progress", subtitle: "Everything runs on this iPhone")
+            ForEach(Array(visibleSteps.enumerated()), id: \.offset) { index, step in
+                ProgressStepRow(index: index + 1, title: stepTitle(step), detail: stepDetail(step), state: stepState(for: step))
+            }
 
             if let message = fallbackMessage {
                 VStack(alignment: .leading, spacing: 12) {
@@ -212,7 +193,8 @@ struct HealthScanView: View {
                     }
                     Button {
                         fallbackMessage = nil
-                        scanStage = .idle
+                        failedStage = nil
+                        stage = nil
                     } label: {
                         Text("Try another image")
                             .font(.caption)
@@ -245,7 +227,7 @@ struct HealthScanView: View {
         if let data = try? await item.loadTransferable(type: Data.self) {
             await processImageData(data)
         } else {
-            scanStage = .failed
+            failedStage = .readingText
             fallbackMessage = "The selected image could not be read. Try choosing another image."
             selectedItem = nil
         }
@@ -259,29 +241,33 @@ struct HealthScanView: View {
             selectedItem = nil
         }
         fallbackMessage = nil
-        scanStage = .readingImage
+        failedStage = nil
+        visionUsed = false
+        stage = nil
 
         let preparedData = alreadyPrepared ? data : (ScanImagePreprocessor.jpegData(from: data) ?? data)
         print("[HealthScan] Prepared image data: original=\(data.count) bytes, prepared=\(preparedData.count) bytes")
         appState.healthScanImageData = preparedData
         do {
             if appEnvironment.route == .onDevice && !appEnvironment.canRunOnDeviceInference {
-                scanStage = .failed
-                fallbackMessage = "The local model is not ready yet. Wait for model loading to finish, then scan again."
+                failedStage = .readingText
+                fallbackMessage = "Gemma 4 is still loading on this iPhone. Scan again in a few seconds."
             } else {
-                scanStage = .extractingMarkers
-                let report = try await appEnvironment.router.healthExtractor.extractHealthReport(imageData: preparedData)
-                scanStage = .preparingResults
+                stage = .readingText
+                let report = try await appEnvironment.router.healthExtractor.extractHealthReport(imageData: preparedData) { next in
+                    if next == .visionFallback { visionUsed = true }
+                    stage = next
+                }
                 appState.setHealthReport(report)
                 appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
             }
         } catch {
             appEnvironment.markServiceError(error)
-            scanStage = .failed
-            fallbackMessage = "The scan could not be parsed. Try a sharper photo with the full report visible."
+            failedStage = stage ?? .readingText
+            fallbackMessage = (error as? HealthScanError)?.errorDescription
+                ?? "The scan could not be completed. Try a sharper photo with the full report visible."
         }
         if fallbackMessage == nil {
-            scanStage = .preparingResults
             navigateToResults = true
         }
     }
@@ -293,50 +279,70 @@ struct HealthScanView: View {
     }
 
     private var scanStageTitle: String {
-        switch scanStage {
-        case .idle: return "Ready"
-        case .readingImage: return "Reading image"
-        case .extractingMarkers: return "Extracting markers"
-        case .preparingResults: return "Preparing results"
-        case .failed: return "Review needed"
+        if failedStage != nil { return "Review needed" }
+        switch stage {
+        case nil: return "Preparing"
+        case .readingText: return "Reading text"
+        case .structuring: return "Structuring"
+        case .visionFallback: return "Reading image"
+        case .verifying: return "Checking values"
         }
     }
 
     private var scanStageDescription: String {
-        switch scanStage {
-        case .idle:
-            return "Take a photo or choose a blood test or checkup report from your library."
-        case .readingImage:
-            return "Preparing the report image for local processing."
-        case .extractingMarkers:
-            return "Trying Gemma 4 vision first, with Apple Vision OCR as fallback."
-        case .preparingResults:
-            return "Formatting extracted values and evidence trace."
-        case .failed:
-            return "Review the message below and try a sharper full-page image."
+        if failedStage != nil { return "Review the message below and try another image." }
+        switch stage {
+        case nil: return "Preparing the report image for local processing."
+        case .readingText: return "Apple Vision is reading the report text on this iPhone."
+        case .structuring: return "Gemma 4 is organizing the results Swift could not read from the table."
+        case .visionFallback: return "The text was hard to read, so Gemma 4 is looking at the image. Only values OCR confirms are kept."
+        case .verifying: return "Checking every value and flag against the report."
         }
     }
 
-    private func stepState(for step: ScanStage) -> ProgressStepRow.StepState {
-        if scanStage == .failed {
-            return step == .preparingResults ? .failed : .complete
-        }
-        switch (scanStage, step) {
-        case (.idle, _):
-            return .pending
-        case (.readingImage, .readingImage),
-             (.extractingMarkers, .extractingMarkers),
-             (.preparingResults, .preparingResults):
-            return .active
-        case (.extractingMarkers, .readingImage),
-             (.preparingResults, .readingImage),
-             (.preparingResults, .extractingMarkers):
-            return .complete
-        default:
-            return .pending
+    // MARK: - Steps
+
+    /// The vision step only appears when the fallback actually runs.
+    private var visibleSteps: [HealthScanStage] {
+        visionUsed ? [.readingText, .structuring, .visionFallback, .verifying] : [.readingText, .structuring, .verifying]
+    }
+
+    private func rank(_ step: HealthScanStage) -> Int {
+        switch step {
+        case .readingText: return 0
+        case .structuring: return 1
+        case .visionFallback: return 2
+        case .verifying: return 3
         }
     }
+
+    private func stepTitle(_ step: HealthScanStage) -> String {
+        switch step {
+        case .readingText: return "Read text"
+        case .structuring: return "Structure with Gemma 4"
+        case .visionFallback: return "Gemma 4 vision fallback"
+        case .verifying: return "Check against the report"
+        }
+    }
+
+    private func stepDetail(_ step: HealthScanStage) -> String {
+        switch step {
+        case .readingText: return "Apple Vision OCR, on device."
+        case .structuring: return "Only lines not already read from the results table."
+        case .visionFallback: return "Values are kept only if OCR confirms them."
+        case .verifying: return "Flags and reference ranges come from the report itself."
+        }
+    }
+
+    private func stepState(for step: HealthScanStage) -> ProgressStepRow.StepState {
+        if let failedStage {
+            return rank(step) < rank(failedStage) ? .complete : rank(step) == rank(failedStage) ? .failed : .pending
+        }
+        guard let stage else { return .pending }
+        return rank(step) < rank(stage) ? .complete : rank(step) == rank(stage) ? .active : .pending
+    }
 }
+
 
 private enum ScanImagePreprocessor {
     static func jpegData(

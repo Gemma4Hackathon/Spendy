@@ -53,10 +53,17 @@ struct HealthResultsView: View {
             .frame(width: 50, height: 50)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("\(report.abnormalCount) metrics need attention")
+                Text(report.abnormalCount == 0
+                     ? "All \(report.metrics.count) results are within range"
+                     : "\(report.abnormalCount) of \(report.metrics.count) results need attention")
                     .font(.headline).fontWeight(.semibold).foregroundStyle(.white)
-                Text("Report date: \(formattedDate(report.reportDate))  ·  \(report.labName)")
+                Text("Scanned \(formattedDate(report.reportDate))  ·  \(report.labName)")
                     .font(.caption).foregroundStyle(SpendyTheme.textMuted)
+                if report.labName.contains("OCR") {
+                    Text("Every value is checked against the report text; flags come from the report.")
+                        .font(.caption2).foregroundStyle(SpendyTheme.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
         }
@@ -85,7 +92,7 @@ struct HealthResultsView: View {
     private func metricsGrid(_ report: HealthReport) -> some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
                   spacing: SpendyTheme.paddingSm) {
-            ForEach(Array(report.metrics.enumerated()), id: \.element.id) { i, metric in
+            ForEach(Array(attentionFirst(report.metrics).enumerated()), id: \.element.id) { i, metric in
                 MetricCard(metric: metric)
                     .opacity(appeared ? 1 : 0)
                     .offset(y: appeared ? 0 : 16)
@@ -158,6 +165,20 @@ struct HealthResultsView: View {
         }
     }
 
+    /// High, then Borderline, then Normal; report order within each group.
+    private func attentionFirst(_ metrics: [HealthMetric]) -> [HealthMetric] {
+        func rank(_ status: HealthStatus) -> Int {
+            switch status {
+            case .warning: return 0
+            case .borderline: return 1
+            case .normal: return 2
+            }
+        }
+        return metrics.enumerated()
+            .sorted { (rank($0.element.status), $0.offset) < (rank($1.element.status), $1.offset) }
+            .map(\.element)
+    }
+
     private func formattedDate(_ date: Date) -> String {
         let f = DateFormatter(); f.dateFormat = "yyyy/MM/dd"; return f.string(from: date)
     }
@@ -166,7 +187,6 @@ struct HealthResultsView: View {
 // MARK: - Metric Card
 private struct MetricCard: View {
     let metric: HealthMetric
-    @State private var barWidth: CGFloat = 0
 
     var statusColor: Color {
         switch metric.status {
@@ -199,24 +219,9 @@ private struct MetricCard: View {
 
             Text(metric.name).font(.caption).foregroundStyle(SpendyTheme.textMuted)
 
-            // Progress bar – 2pt, subtle
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.06)).frame(height: 2)
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(statusColor.opacity(0.8))
-                        .frame(width: barWidth == 0 ? 0 : geo.size.width * metric.progress, height: 2)
-                }
-                .onAppear {
-                    withAnimation(.easeOut(duration: 0.8).delay(0.3)) {
-                        barWidth = geo.size.width
-                    }
-                }
-            }
-            .frame(height: 2)
-
+            // No bar here: a fixed-length bar per status looked like the value's position.
             if !metric.normalRange.isEmpty {
-                Text("Normal: \(metric.normalRange)")
+                Text("Reference \(metric.normalRange)")
                     .font(.caption2).foregroundStyle(SpendyTheme.textMuted)
             }
         }

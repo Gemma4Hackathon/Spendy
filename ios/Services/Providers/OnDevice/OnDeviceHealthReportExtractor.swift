@@ -18,10 +18,14 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
     // MARK: - HealthReportExtracting
 
     func extractHealthReport(imageData: Data) async throws -> HealthReport {
+        try await extractHealthReport(imageData: imageData, onStage: { _ in })
+    }
+
+    func extractHealthReport(imageData: Data, onStage: @escaping @MainActor (HealthScanStage) -> Void) async throws -> HealthReport {
         // [PERF] measurement wrapper; the original logic lives in extractHealthReportImpl.
         let scope = PerfScope.begin("health_scan", extra: "image_bytes=\(imageData.count)")
         do {
-            let report = try await extractHealthReportImpl(imageData: imageData)
+            let report = try await extractHealthReportImpl(imageData: imageData, onStage: onStage)
             scope.end("result=ok metrics=\(report.metrics.count) lab=\"\(report.labName)\"")
             if PerfMonitor.verbose {
                 for metric in report.metrics {
@@ -45,7 +49,8 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
     ///    values (bench/experiments.md), so it is never trusted unverified.
     /// 4. If OCR fails or finds no text, the image is rejected: no value is shown unverified.
     /// Status, reference range and evidence trace are decided in `HealthReportVerifier`.
-    private func extractHealthReportImpl(imageData: Data) async throws -> HealthReport {
+    private func extractHealthReportImpl(imageData: Data, onStage: @MainActor (HealthScanStage) -> Void) async throws -> HealthReport {
+        onStage(.readingText)
         let lines: [OCRLine]
         do {
             lines = try await withTimeout(seconds: 8) {
@@ -56,11 +61,11 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
             // typical values, not readings (a landscape photo returned TC 210, LDL 140).
             print("[HealthExtractor] Apple Vision OCR failed: \(error.localizedDescription)")
             logVerification(path: "ocr_failed", visionRan: false, vision: 0, visionVerified: 0, text: 0, final: 0)
-            throw CactusError.inferenceFailure("The report text could not be read. Please try a clearer photo.")
+            throw HealthScanError.unreadable
         }
         guard !lines.isEmpty else {
             logVerification(path: "no_text", visionRan: false, vision: 0, visionVerified: 0, text: 0, final: 0)
-            throw CactusError.inferenceFailure("No report text was found in the selected image.")
+            throw HealthScanError.noText
         }
         let ocrText = lines.map(\.text).joined(separator: "\n")
         print("[HealthExtractor] OCR text recognized (\(lines.count) lines, \(ocrText.count) chars).")
@@ -83,6 +88,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         let textModelRuns = isModelReady && prompt.hasNumbers
         var textCandidates: [MetricCandidate] = []
         if textModelRuns {
+            onStage(.structuring)
             do {
                 print("[HealthExtractor] Structuring OCR text with Gemma 4 (\(prompt.keptLines) of \(prompt.totalLines) lines)...")
                 textCandidates = try await runTextInference(ocrText: prompt.text)
@@ -112,6 +118,7 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         var visionCandidates: [MetricCandidate]? = nil
         var verifiedVisionCount = 0
         if metrics.count < minimumMetricCount {
+            if isModelReady { onStage(.visionFallback) }
             visionCandidates = await visionCandidatesIfReady(imageData: imageData)
             let verifiedVision = HealthReportVerifier.verify(visionCandidates ?? [], lines: lines, requireSameRow: true)
             verifiedVisionCount = verifiedVision.count
@@ -128,9 +135,8 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
         logVerification(path: path, visionRan: visionCandidates != nil, vision: visionCandidates?.count ?? 0,
                         visionVerified: verifiedVisionCount, text: verifiedText.count, tableFilled: tableFilled, final: metrics.count,
                         prompt: prompt)
-        guard !metrics.isEmpty else {
-            throw CactusError.inferenceFailure("No health metrics were found in the selected image.")
-        }
+        onStage(.verifying)
+        guard !metrics.isEmpty else { throw HealthScanError.noMetrics }
         return makeReport(metrics, labName: labName)
     }
 

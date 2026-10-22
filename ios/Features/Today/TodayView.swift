@@ -278,7 +278,7 @@ private extension TodayView {
         switch appEnvironment.onDeviceInstallState {
         case .ready: return "Gemma 4 is ready for local inference."
         case .downloading: return "Gemma 4 is loading on this iPhone."
-        case .failed: return "Model load failed. Check Xcode logs."
+        case .failed: return "Model failed to load. Restart the app to try again."
         case .notInstalled: return "Model has not finished initializing."
         }
     }
