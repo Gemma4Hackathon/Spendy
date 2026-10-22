@@ -125,7 +125,10 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             let topCats = (byAmount.filter { dietRelated.contains($0.category) } + byAmount.filter { !dietRelated.contains($0.category) })
                 .prefix(2)
                 .map { ($0.category.rawValue, $0.total) }
-            weeklyTargets = topCats.map { SpendingTargets.summary(category: $0.0, monthlyAmount: Double($0.1)) }
+            // Every diet-related category gets a target, so the model never has to invent one.
+            let targetCats = byAmount.filter { dietRelated.contains($0.category) }
+            weeklyTargets = (targetCats.isEmpty ? Array(byAmount.prefix(2)) : targetCats)
+                .map { SpendingTargets.summary(category: $0.category.rawValue, monthlyAmount: Double($0.total)) }
             let cat1 = topCats.first.map { "\($0.0) NT$\($0.1)" } ?? "Food Delivery NT$1500"
             let cat2 = topCats.dropFirst().first.map { "\($0.0) NT$\($0.1)" } ?? "Drinks NT$800"
 
@@ -179,7 +182,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
 
         DATA:
         User: \(profile.age)yo \(profile.gender), BMI \(String(format: "%.1f", profile.bmi)).
-        Spending categories: \(spendingLines).
+        Spending this month (monthly totals): \(spendingLines).
         Health metrics: \(healthLines).
         Weekly targets: \(context.weeklyTargets.joined(separator: "; ")).
 
