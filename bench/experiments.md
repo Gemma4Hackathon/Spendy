@@ -38,3 +38,10 @@ Diagnosis: `bench/results/phase2-diag-2026-10-21.md`. Measured on the same proto
 Offline check before the device run (macOS Vision OCR on `IMG_9596.HEIC` / `IMG_9603.heic`, model outputs from the diag log):
 vision output keeps 1/8 (Glucose, correct) on both images; OCR-text output keeps 8/8 with values, status and range matching the ground truth on both.
 macOS and iOS OCR can differ, so the device run is the real check.
+
+Device result (3 rounds, `bench/results/phase2-2026-10-21.md`): 0 parse failures, 0 reloads, Insights 1 inference;
+IMG_9596 8/8, IMG_9603 2/8 because the text model returned only the Key Findings block on the flat scan.
+
+| Change after the benchmark | Where | Reason |
+|---|---|---|
+| Known metrics read from OCR table rows (label line + same-row reading, plausibility range, verified on its row) fill keys the models left out | `HealthReportVerifier.tableCandidates`, extractor (`bd0c74a`) | IMG_9603 lipid panel missing. Offline on iPhone OCR from r1-r3: IMG_9603 7/8, IMG_9596 8/8. Not yet confirmed on device |

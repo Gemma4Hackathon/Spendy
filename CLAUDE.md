@@ -1,8 +1,8 @@
 # CLAUDE.md: Spendy on-device optimization
 
 Handoff notes for continuing the Spendy optimization work in Claude Code. Read this first, then
-`bench/README.md`, `bench/experiments.md`, `bench/results/baseline-2026-10-21.md` and
-`bench/results/phase1-2026-10-21.md`.
+`bench/README.md`, `bench/experiments.md`, `bench/results/baseline-2026-10-21.md`,
+`bench/results/phase1-2026-10-21.md` and `bench/results/phase2-2026-10-21.md`.
 
 ## Working rules (from John)
 
@@ -79,24 +79,16 @@ Baseline = 5 rounds, each phase = 3 rounds. Ground truth for the sample report i
 - Baseline: done (`bench/results/baseline-2026-10-21.md`).
 - Phase 1 (prompt-order fix + visual tokens 140): done (`bench/results/phase1-2026-10-21.md`).
   Prompt loss 35 % to 0 %, vision bad_alloc 5/10 to 0/6, scan peak 2,065 to 1,774 MB median.
-  Side effects: many model outputs now fail Spendy's JSON parsing, causing repair inferences, model
-  reloads and retries (IMG_9596 scan 373 s, Insights 295 s); vision invents plausible values.
+- Phase 2 (repetition_penalty off + temperature 0, `LenientJSON`, OCR-verified health scan, status in Swift):
+  done (`bench/results/phase2-2026-10-21.md`, commit `29208e0`). 0 JSON failures, 0 reloads, Insights 1 inference,
+  fully deterministic. IMG_9596 8/8; IMG_9603 2/8 (text model skipped the lipid panel). Scans 213-325 s,
+  Insights 192 s, Finance 41 s. Vision still invents values and contributes nothing to the final result.
+- After the benchmark: `bd0c74a` fills metrics from OCR table rows (offline on iPhone OCR: IMG_9603 7/8).
+  Not yet confirmed on device.
 
-## Next: phase 2
+## Next
 
-Goal: fewer output tokens and better extraction accuracy, keeping the vision (multimodal) path.
-
-**Step 0, diagnosis (do this first).** Change verbose logging so failing responses are printed in full
-(no truncation, no quote replacement), e.g. log the complete response whenever a parse fails. Build,
-then ask John to run only "Health Scan IMG_9596" and "Insights" once and save `phase2-diag.log`.
-Find out exactly why the JSON is invalid (markdown fences, trailing commas, truncation, other) before
-changing any parser.
-
-Then:
-1. JSON tolerance: fix parsing in the providers based on step 0, to cut repair inferences and retries.
-2. Vision and OCR cross-validation in `OnDeviceHealthReportExtractor`: keep a vision value only if it also
-   appears in the Apple Vision OCR text; fill the rest from OCR + text model. Run OCR without releasing the
-   model (removes the ~8 s reload).
-3. Compute Normal/Borderline/High in Swift from reference ranges; the model outputs only name, value, unit.
-4. Shorten output schemas for health, Insights and Finance. Check which fields the UI uses before removing any.
-5. Run 3 rounds (`phase2-r1..r3.log`), write `bench/results/phase2-<date>.md`, compare with baseline and phase 1.
+1. Confirm `bd0c74a` on device: one Health Scan of IMG_9603, expect `table_filled=5 final=9` in `scan_verification`.
+2. Optimization phase (latency is decode-bound, about 4 tok/s on 1,000+ token contexts): shorten output schemas
+   for health, Insights and Finance (check which fields the UI uses before removing any); decide what to do
+   about vision (96-170 s per scan, no confirmed values). Measure with the same 3-round protocol.
