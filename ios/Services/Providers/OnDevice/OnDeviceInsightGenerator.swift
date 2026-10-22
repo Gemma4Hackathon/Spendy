@@ -98,6 +98,37 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             let metric: HealthMetric?
             /// "Glucose: 115mg/dL", as the prompt names the metric.
             let metricLabel: String
+            /// The spending category and its monthly total, when there is spending.
+            let category: String?
+            let monthly: Int?
+
+            // Swift-written text for advice the guardrail rejects.
+
+            var safeCauseDetail: String {
+                guard let category, let monthly else { return "Spending in this category adds up over the month." }
+                return "\(category) spending was NT$\(monthly) this month, about NT$\(SpendingTargets.weeklyPace(Double(monthly))) a week."
+            }
+
+            var safeRisk: String {
+                "This spending pattern may contribute to \(metric?.name ?? metricLabel)."
+            }
+
+            func safeAction(_ variant: Int) -> InsightAction {
+                guard let category, let monthly else {
+                    return InsightAction(title: "Set a 7-day limit", description: "Pick one repeat purchase to cap this week.",
+                                         expectedOutcome: "One clear spending limit kept for 7 days.", timeframe: "7 days", difficulty: 1)
+                }
+                let pace = SpendingTargets.weeklyPace(Double(monthly))
+                let cap = SpendingTargets.weeklyCap(Double(monthly))
+                if variant == 0 {
+                    return InsightAction(title: "Cap \(category) at NT$\(cap)/week",
+                                         description: "A weekly cap keeps \(category) about NT$\(max(0, pace - cap)) below the current pace.",
+                                         expectedOutcome: "Save about NT$\(max(0, pace - cap)) in 7 days.", timeframe: "7 days", difficulty: 2)
+                }
+                return InsightAction(title: "Skip one \(category) purchase",
+                                     description: "Replacing one repeat purchase is an easy first step.",
+                                     expectedOutcome: "One fewer \(category) purchase in 7 days.", timeframe: "7 days", difficulty: 1)
+            }
         }
 
         let riskScore: Int
@@ -107,6 +138,8 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         let weeklyTargets: [String]
         /// Abnormal metric names for the action plan, e.g. "Glucose, Hemoglobin A1c".
         let targetMetric: String
+        /// NT$ amounts the advice may mention (see OutputGuardrail).
+        let guardrail: OutputGuardrail.Context
 
         init(spending: [SpendingEntry], health: HealthReport) {
             let totalSpend = spending.reduce(0) { $0 + $1.amount }
@@ -129,6 +162,8 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             let targetCats = byAmount.filter { dietRelated.contains($0.category) }
             weeklyTargets = (targetCats.isEmpty ? Array(byAmount.prefix(2)) : targetCats)
                 .map { SpendingTargets.summary(category: $0.category.rawValue, monthlyAmount: Double($0.total)) }
+            guardrail = OutputGuardrail.Context(monthlyByCategory: byAmount.map(\.total),
+                                                extra: [Int(totalSpend), Int(totalSpend * 0.45)])
             let cat1 = topCats.first.map { "\($0.0) NT$\($0.1)" } ?? "Food Delivery NT$1500"
             let cat2 = topCats.dropFirst().first.map { "\($0.0) NT$\($0.1)" } ?? "Drinks NT$800"
 
@@ -139,9 +174,11 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             }
             findings = [
                 Finding(icon: "fork.knife", accentColor: "amber", cause: "\(cat1) spending pattern",
-                        metric: ranked.first, metricLabel: label(ranked.first, "Blood Sugar: 110 mg/dL")),
+                        metric: ranked.first, metricLabel: label(ranked.first, "Blood Sugar: 110 mg/dL"),
+                        category: topCats.first?.0, monthly: topCats.first?.1),
                 Finding(icon: "moon.fill", accentColor: "red", cause: "\(cat2) spending pattern",
-                        metric: ranked.dropFirst().first, metricLabel: label(ranked.dropFirst().first, "Blood Pressure: 130/85"))
+                        metric: ranked.dropFirst().first, metricLabel: label(ranked.dropFirst().first, "Blood Pressure: 130/85"),
+                        category: topCats.dropFirst().first?.0, monthly: topCats.dropFirst().first?.1)
             ]
             targetMetric = abnormal.isEmpty
                 ? "Blood pressure, glucose, triglycerides"
@@ -243,14 +280,25 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         }
 
         let findingsArray = dict["findings"] as? [[String: Any]] ?? []
-        let actionPlan = parseActionPlan(dict["actionPlan"], targetMetric: context.targetMetric)
-            ?? fallbackActionPlan(health: health)
+        // Every sentence is checked before it is shown; a field that names a wrong amount, a
+        // zero target, a monthly total as weekly or a lab-value promise gets Swift-written text.
+        var audit = OutputGuardrail.Audit(context: context.guardrail)
+        let fallbackPlan = fallbackActionPlan(health: health)
+        var actionPlan = parseActionPlan(dict["actionPlan"], targetMetric: context.targetMetric) ?? fallbackPlan
+        if !audit.passes([actionPlan.movement.title, actionPlan.movement.recommendation, actionPlan.movement.whyItMatters]) {
+            actionPlan.movement = fallbackPlan.movement
+        }
+        if !audit.passes([actionPlan.food.title, actionPlan.food.recommendation, actionPlan.food.whyItMatters]) {
+            actionPlan.food = fallbackPlan.food
+        }
 
         let findings: [InsightConnection] = zip(findingsArray, context.findings).compactMap { f, frame in
             guard
-                let causeDetail = string(f["causeDetail"]),
-                let risk        = string(f["risk"])
+                var causeDetail = string(f["causeDetail"]),
+                var risk        = string(f["risk"])
             else { return nil }
+            if !audit.passes([causeDetail]) { causeDetail = frame.safeCauseDetail }
+            if !audit.passes([risk]) { risk = frame.safeRisk }
 
             // Health facts come from the report, not from the model's wording.
             let healthImpact = frame.metric?.name ?? frame.metricLabel
@@ -260,12 +308,13 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             } ?? frame.metricLabel
 
             let actionsArray = f["actions"] as? [[String: Any]] ?? []
-            let actions: [InsightAction] = actionsArray.compactMap { a in
+            let actions: [InsightAction] = actionsArray.enumerated().compactMap { index, a in
                 guard
                     let title       = string(a["title"]),
                     let description = string(a["description"]),
                     let outcome     = string(a["expectedOutcome"])
                 else { return nil }
+                guard audit.passes([title, description], outcome: outcome) else { return frame.safeAction(index) }
                 return InsightAction(
                     title:           title,
                     description:     description,
@@ -298,6 +347,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         }
 
         print("[InsightGenerator] Parsed \(findings.count) findings, riskScore=\(context.riskScore), monthlyAtRisk=\(Int(context.monthlyAtRisk))")
+        PerfMonitor.log("guardrail", "source=insights \(audit.summary)")
 
         return InsightResult(
             keyFindings:          findings,

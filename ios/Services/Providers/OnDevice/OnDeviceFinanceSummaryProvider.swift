@@ -111,7 +111,8 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             maxTokens: 500,
             temperature: 0
         )
-        return parseFinanceInsight(from: text, fallback: fallbackInsight(breakdown: breakdown, total: total))
+        let guardrail = OutputGuardrail.Context(monthlyByCategory: breakdown.values.map { Int($0) }, extra: [Int(total)])
+        return parseFinanceInsight(from: text, guardrail: guardrail, fallback: fallbackInsight(breakdown: breakdown, total: total))
     }
 
     // MARK: - Risk Detection
@@ -160,6 +161,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
 
     private func parseFinanceInsight(
         from text: String,
+        guardrail: OutputGuardrail.Context,
         fallback: FinanceInsightPayload
     ) -> FinanceInsightPayload {
         let parsed = LenientJSON.parse(text)
@@ -185,15 +187,29 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         // Items and their caps are Swift-computed (see `fallbackInsight`).
         let items = fallback.items
 
-        let markdownNote = string(dict["note"]).map { note in
-            let checklist = (dict["checklist"] as? [Any] ?? []).compactMap(string).prefix(3)
-            return Self.markdownNote(paragraph: note, items: items, checklist: Array(checklist))
-        } ?? fallback.markdownNote
+        // Each sentence is checked; a wrong amount, zero target or monthly-as-weekly falls back
+        // to the Swift-written field (see OutputGuardrail).
+        var audit = OutputGuardrail.Audit(context: guardrail)
+        func checked(_ key: String, fallback: String) -> String {
+            guard let text = string(dict[key]) else { return fallback }
+            return audit.passes([text]) ? text : fallback
+        }
+        let shortTitle = checked("shortTitle", fallback: fallback.shortTitle)
+        let quickTake = checked("quickTake", fallback: fallback.quickTake)
+        let primaryAction = checked("primaryAction", fallback: fallback.primaryAction)
+        let markdownNote: String
+        if let note = string(dict["note"]), audit.passes([note]) {
+            let checklist = (dict["checklist"] as? [Any] ?? []).compactMap(string).prefix(3).filter { audit.passes([$0]) }
+            markdownNote = Self.markdownNote(paragraph: note, items: items, checklist: Array(checklist))
+        } else {
+            markdownNote = fallback.markdownNote
+        }
+        PerfMonitor.log("guardrail", "source=finance \(audit.summary)")
 
         return FinanceInsightPayload(
-            shortTitle: string(dict["shortTitle"]) ?? fallback.shortTitle,
-            quickTake: string(dict["quickTake"]) ?? fallback.quickTake,
-            primaryAction: string(dict["primaryAction"]) ?? fallback.primaryAction,
+            shortTitle: shortTitle,
+            quickTake: quickTake,
+            primaryAction: primaryAction,
             items: items,
             markdownNote: markdownNote
         )
