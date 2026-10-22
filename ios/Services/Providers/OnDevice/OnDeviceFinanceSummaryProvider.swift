@@ -73,11 +73,10 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             .map { "- \($0.title): NT$\(Int($0.amount)) [\($0.category.rawValue)]" }
             .joined(separator: "\n")
 
-        // Category names, amounts, icons and the markdown table come from `breakdown` in Swift;
-        // the model only writes the advice text.
-        let impactHints = topCategories(breakdown).map { top in
-            "\"one specific cap or swap for \(top.category.rawValue), e.g. cap at NT$\(Self.weeklyCap(top.amount))/week, maximum 10 words\""
-        }.joined(separator: ",")
+        // Every number shown (amounts, weekly caps, the table) is computed in Swift; the model
+        // only writes sentences. It miscalculated caps (NT$765/week for NT$800/month).
+        let top = topCategories(breakdown).first
+        let capHint = top.map { "keeps \($0.category.rawValue) under NT$\(Self.weeklyCap($0.amount))/week" } ?? "sets a weekly NT$ cap"
 
         let systemPrompt = """
         You are a concise budget triage engine for a finance app. \
@@ -101,7 +100,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         \(recent)
 
         Complete this JSON using only real values from the data above:
-        {"shortTitle":"3-5 words, no alarm language","quickTake":"one concrete sentence with NT$ amount and percentage, maximum 20 words","primaryAction":"one measurable 7-day action that caps the largest category at a weekly NT$ limit, maximum 16 words","impacts":[\(impactHints)],"note":"one short paragraph with concrete NT$ amounts, maximum 50 words","checklist":["one concrete 7-day step with a number","one concrete 7-day step with a number","one concrete 7-day step with a number"]}
+        {"shortTitle":"3-5 words, no alarm language","quickTake":"one concrete sentence with NT$ amount and percentage, maximum 20 words","primaryAction":"one 7-day action that \(capHint), maximum 16 words","note":"one short paragraph with concrete NT$ amounts, maximum 50 words","checklist":["one concrete 7-day step with a number","one concrete 7-day step with a number","one concrete 7-day step with a number"]}
 
         If uncertain, still return the JSON using the category totals. Do not say you need more information.
         """
@@ -112,7 +111,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             maxTokens: 500,
             temperature: 0
         )
-        return parseFinanceInsight(from: text, breakdown: breakdown, fallback: fallbackInsight(breakdown: breakdown, total: total))
+        return parseFinanceInsight(from: text, fallback: fallbackInsight(breakdown: breakdown, total: total))
     }
 
     // MARK: - Risk Detection
@@ -161,7 +160,6 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
 
     private func parseFinanceInsight(
         from text: String,
-        breakdown: [SpendingCategory: Double],
         fallback: FinanceInsightPayload
     ) -> FinanceInsightPayload {
         let parsed = LenientJSON.parse(text)
@@ -174,21 +172,18 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             return fallback
         }
         // The prompt's JSON is a template with instructions as values; a copied template is not an answer.
-        let templateMarkers = ["maximum 10 words", "no alarm language", "maximum 20 words", "one concrete 7-day step"]
+        let templateMarkers = ["maximum 16 words", "no alarm language", "maximum 20 words", "one concrete 7-day step"]
         guard !templateMarkers.contains(where: cleaned.contains) else {
             PerfMonitor.logParseFailure(source: "finance", reason: "placeholders", raw: text, cleaned: cleaned)
             return fallback
         }
 
-        let impacts = (dict["impacts"] as? [Any] ?? []).compactMap(string)
-        let items = zip(topCategories(breakdown), impacts).map { top, impact in
-            FinanceInsightItem(icon: top.category.icon, title: top.category.rawValue,
-                               amount: "NT$\(Int(top.amount))", impact: impact)
-        }
-        guard !items.isEmpty else {
-            PerfMonitor.logParseFailure(source: "finance", reason: "no_valid_items", raw: text, cleaned: cleaned)
+        guard string(dict["quickTake"]) != nil || string(dict["note"]) != nil else {
+            PerfMonitor.logParseFailure(source: "finance", reason: "no_text_fields", raw: text, cleaned: cleaned)
             return fallback
         }
+        // Items and their caps are Swift-computed (see `fallbackInsight`).
+        let items = fallback.items
 
         let markdownNote = string(dict["note"]).map { note in
             let checklist = (dict["checklist"] as? [Any] ?? []).compactMap(string).prefix(3)

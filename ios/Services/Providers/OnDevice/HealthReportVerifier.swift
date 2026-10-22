@@ -102,13 +102,13 @@ nonisolated enum HealthReportVerifier {
     /// same row, a line that starts with its reading ("115 mg/dL"). Reference-range lines
     /// and implausible readings (OCR "2.0" -> "20" for a ratio) are skipped. Used to fill
     /// rows the text model left out; results still go through `verify`.
+    /// A key can get several candidates; `verify` keeps the first one confirmed on its row.
     static func tableCandidates(lines: [OCRLine]) -> [MetricCandidate] {
-        var seenKeys = Set<String>()
         var result: [MetricCandidate] = []
         for (labelIndex, label) in lines.enumerated() {
-            guard let reference = Reference.match(tokens(label.text)),
-                  let plausible = plausibleReadings[reference.key],
-                  !seenKeys.contains(reference.key)
+            guard isNameLine(label.text),
+                  let reference = Reference.match(tokens(label.text)),
+                  let plausible = plausibleReadings[reference.key]
             else { continue }
 
             let readings = lines.indices
@@ -123,7 +123,6 @@ nonisolated enum HealthReportVerifier {
                 }
             guard let closest = readings.min(by: { $0.distance < $1.distance }) else { continue }
 
-            seenKeys.insert(reference.key)
             result.append(MetricCandidate(name: reference.displayName, value: closest.value,
                                           unit: "", normalRange: "", modelStatus: nil))
         }
@@ -225,7 +224,8 @@ nonisolated enum HealthReportVerifier {
         let nameTokens = significantTokens(name)
         for line in lines where containsValue(value, in: line.text) {
             let row = lines.filter { abs($0.midY - line.midY) < 0.6 * max($0.height, line.height) }
-            let rowTokens = Set(row.flatMap { tokens($0.text) })
+            // Names only: a unit on a value line ("6.1% of total Hgb") is not a metric name.
+            let rowTokens = Set(row.filter { isNameLine($0.text) }.flatMap { tokens($0.text) })
             let rowMatches: Bool
             if let reference {
                 rowMatches = Reference.match(rowTokens)?.key == reference.key
@@ -240,6 +240,11 @@ nonisolated enum HealthReportVerifier {
             )
         }
         return nil
+    }
+
+    /// A line that can name a metric: it does not start with a reading ("115 mg/dL", "6.1%").
+    private static func isNameLine(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespaces).first?.isNumber != true
     }
 
     /// The first range expression in a line: "65-99", "< 5.7", "≤5.0", ">OR=46".
@@ -499,7 +504,8 @@ nonisolated enum HealthReportVerifier {
                           return .normal
                       }),
             Reference(key: "hemoglobin", displayName: "Hemoglobin", unit: "g/dL", range: "13.5-16.5",
-                      matches: { !$0.isDisjoint(with: ["hemoglobin", "haemoglobin", "hb", "hgb"]) },
+                      // "% of total Hgb" is the HbA1c unit, not a hemoglobin result.
+                      matches: { !$0.isDisjoint(with: ["hemoglobin", "haemoglobin", "hb"]) || ($0.contains("hgb") && !$0.contains("total")) },
                       evaluate: { value in
                           guard var number = Double(value) else { return .normal }
                           if number > 30 { number /= 10 }   // reported in g/L
