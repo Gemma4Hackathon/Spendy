@@ -167,10 +167,7 @@ final class CactusManager {
                     messagesJSON,
                     optionsJSON,
                     nil,
-                    onToken.map { cb in { token, _ in
-                        cb(token)
-                        print("[Gemma]", token, terminator: "")
-                    }}
+                    onToken.map { cb in { token, _ in cb(token) } }
                 )
             } catch {
                 inferenceScope.end("result=error")

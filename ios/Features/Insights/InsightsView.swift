@@ -7,6 +7,8 @@ struct InsightsView: View {
     @State private var gaugeScore: CGFloat = 0
     @State private var isGenerating = false
     @State private var errorMessage: String? = nil
+    @State private var progress = InsightProgress()
+    @State private var generationStart = Date()
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -31,7 +33,7 @@ struct InsightsView: View {
             }
 
             if isGenerating && appState.insightResult != nil {
-                generatingOverlay
+                progressCard
                     .padding(.horizontal, SpendyTheme.padding)
                     .padding(.top, 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -188,10 +190,7 @@ struct InsightsView: View {
                     Text("\(result.keyFindings.count) cross-domain")
                         .font(.title3).fontWeight(.bold).foregroundStyle(.white)
                 }
-                StatusBadge(
-                    label: result.overallRiskScore >= 70 ? "High Risk" : "Moderate",
-                    color: result.overallRiskScore >= 70 ? SpendyTheme.healthBad : SpendyTheme.healthWarn
-                )
+                StatusBadge(label: riskLabel(result.overallRiskScore), color: gaugeColor(result.overallRiskScore))
             }
             Spacer()
         }
@@ -356,14 +355,16 @@ struct InsightsView: View {
                     .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)
                     .multilineTextAlignment(.center)
             }
-            if appState.canGenerateInsights {
+            if isGenerating {
+                progressCard
+            } else if appState.canGenerateInsights {
                 GradientButton("Generate Insights", icon: "sparkles", isLoading: isGenerating) {
                     Task { await generateInsights() }
                 }
                 .padding(.horizontal, 40)
             }
         }
-        .padding(40)
+        .padding(isGenerating ? SpendyTheme.padding : 40)
     }
 
     // MARK: - AI Action
@@ -371,6 +372,8 @@ struct InsightsView: View {
         isGenerating = true
         appState.isGeneratingInsights = true
         errorMessage = nil
+        progress = InsightProgress()
+        generationStart = Date()
         defer {
             isGenerating = false
             appState.isGeneratingInsights = false
@@ -391,7 +394,13 @@ struct InsightsView: View {
             let result = try await appEnvironment.router.insightGenerator.generateInsights(
                 profile: appState.profile,
                 spending: spending,
-                health: healthReport
+                health: healthReport,
+                onProgress: { update in
+                    Task { @MainActor in
+                        // A retry restarts the token count; otherwise ignore out-of-order updates.
+                        if update.tokens >= progress.tokens || update.tokens <= 8 { progress = update }
+                    }
+                }
             )
             appState.setInsightResult(result, for: analysisMonth)
             appState.lastInferenceSource = appEnvironment.router.currentSourceLabel.rawValue
@@ -407,21 +416,62 @@ struct InsightsView: View {
         }
     }
 
-    private var generatingOverlay: some View {
-        HStack(spacing: 10) {
-            ProgressView().tint(SpendyTheme.accent)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Generating insights")
-                    .font(.subheadline).fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                Text("Running Gemma 4 locally on this iPhone.")
-                    .font(.caption)
-                    .foregroundStyle(SpendyTheme.textMuted)
+    /// Live progress while Gemma 4 writes (about 80 s on device): what is finished, what is
+    /// being written, and elapsed time.
+    private var progressCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                ProgressView().tint(SpendyTheme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Generating insights")
+                        .font(.subheadline).fontWeight(.semibold)
+                        .foregroundStyle(.white)
+                    Text("Gemma 4 · running on this iPhone")
+                        .font(.caption)
+                        .foregroundStyle(SpendyTheme.textMuted)
+                }
+                Spacer()
+                TimelineView(.periodic(from: generationStart, by: 1)) { context in
+                    Text("\(max(0, Int(context.date.timeIntervalSince(generationStart))))s")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(SpendyTheme.textMuted)
+                }
             }
-            Spacer()
+            ForEach(InsightProgress.Step.allCases, id: \.self) { step in
+                ProgressStepRow(index: step.rawValue + 1, title: stepTitle(step), detail: stepDetail(step), state: stepState(step))
+            }
+            ProgressStepRow(
+                index: InsightProgress.Step.allCases.count + 1,
+                title: "Check numbers",
+                detail: "Every NT$ amount is checked against your spending.",
+                state: progress.isComplete ? .active : .pending
+            )
         }
         .padding(14)
         .cardStyle()
+    }
+
+    private func stepTitle(_ step: InsightProgress.Step) -> String {
+        switch step {
+        case .movement: return "Movement plan"
+        case .food: return "Food plan"
+        case .finding1: return "Pattern 1"
+        case .finding2: return "Pattern 2"
+        }
+    }
+
+    private func stepDetail(_ step: InsightProgress.Step) -> String {
+        if let title = progress.finished[step] { return title.isEmpty ? "Done" : title }
+        return progress.current == step ? "Writing…" : "Waiting"
+    }
+
+    private func stepState(_ step: InsightProgress.Step) -> ProgressStepRow.StepState {
+        if progress.finished[step] != nil { return .complete }
+        return progress.current == step ? .active : .pending
+    }
+
+    private func riskLabel(_ score: Int) -> String {
+        score >= 70 ? "High Risk" : score >= 40 ? "Moderate" : "Low Risk"
     }
 
     private func errorBanner(_ message: String) -> some View {

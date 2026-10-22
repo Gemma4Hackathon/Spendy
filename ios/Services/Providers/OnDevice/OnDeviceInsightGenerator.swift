@@ -17,6 +17,15 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         spending: [SpendingEntry],
         health: HealthReport
     ) async throws -> InsightResult {
+        try await generateInsights(profile: profile, spending: spending, health: health, onProgress: { _ in })
+    }
+
+    func generateInsights(
+        profile: UserProfile,
+        spending: [SpendingEntry],
+        health: HealthReport,
+        onProgress: @escaping @Sendable (InsightProgress) -> Void
+    ) async throws -> InsightResult {
         guard isModelReady else {
             print("[InsightGenerator] BLOCKED: CactusManager not ready (state: \(CactusManager.shared.state))")
             throw CactusError.modelNotLoaded
@@ -24,7 +33,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         print("[InsightGenerator] Starting on-device inference...")
         let scope = PerfScope.begin("insight_generation")
         do {
-            let result = try await runInference(profile: profile, spending: spending, health: health)
+            let result = try await runInference(profile: profile, spending: spending, health: health, onProgress: onProgress)
             scope.end("result=ok")
             return result
         } catch {
@@ -38,29 +47,62 @@ final class OnDeviceInsightGenerator: InsightGenerating {
     private func runInference(
         profile: UserProfile,
         spending: [SpendingEntry],
-        health: HealthReport
+        health: HealthReport,
+        onProgress: @escaping @Sendable (InsightProgress) -> Void
     ) async throws -> InsightResult {
         let context = InsightContext(spending: spending, health: health)
         let userMessage = buildUserMessage(profile: profile, spending: spending, health: health, context: context)
 
         do {
-            let rawText = try await requestInsightJSON(userMessage: userMessage, isRetry: false)
+            let rawText = try await requestInsightJSON(userMessage: userMessage, isRetry: false, onProgress: onProgress)
             return try parseInsightResult(from: rawText, context: context, health: health)
         } catch {
             print("[InsightGenerator] First attempt failed: \(error.localizedDescription). Retrying with stricter schema.")
             let retryMessage = buildRetryUserMessage(from: userMessage)
-            let rawText = try await requestInsightJSON(userMessage: retryMessage, isRetry: true)
+            let rawText = try await requestInsightJSON(userMessage: retryMessage, isRetry: true, onProgress: onProgress)
             return try parseInsightResult(from: rawText, context: context, health: health)
         }
     }
 
-    private func requestInsightJSON(userMessage: String, isRetry: Bool) async throws -> String {
-        try await CactusManager.shared.complete(
+    private func requestInsightJSON(
+        userMessage: String,
+        isRetry: Bool,
+        onProgress: @escaping @Sendable (InsightProgress) -> Void
+    ) async throws -> String {
+        let stream = ProgressStream(report: onProgress)
+        let text = try await CactusManager.shared.complete(
             systemPrompt: insightSystemPrompt(isRetry: isRetry),
             userMessage: userMessage,
             maxTokens: 1000,
-            temperature: 0
+            temperature: 0,
+            onToken: { stream.append($0) }
         )
+        onProgress(InsightProgress.from(partial: text, tokens: stream.tokenCount))
+        return text
+    }
+
+    /// Collects streamed tokens on the inference queue and reports parsed progress every
+    /// 8 tokens (parsing a 2 KB partial answer takes well under a millisecond).
+    private nonisolated final class ProgressStream: @unchecked Sendable {
+        private let lock = NSLock()
+        private var text = ""
+        private var tokens = 0
+        private let report: @Sendable (InsightProgress) -> Void
+
+        init(report: @escaping @Sendable (InsightProgress) -> Void) { self.report = report }
+
+        var tokenCount: Int { lock.withLock { tokens } }
+
+        func append(_ token: String) {
+            let snapshot: (String, Int)? = lock.withLock {
+                text += token
+                tokens += 1
+                return tokens % 8 == 0 ? (text, tokens) : nil
+            }
+            if let (partial, count) = snapshot {
+                report(InsightProgress.from(partial: partial, tokens: count))
+            }
+        }
     }
 
     private func insightSystemPrompt(isRetry: Bool) -> String {
