@@ -75,8 +75,9 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
 
         // Category names, amounts, icons and the markdown table come from `breakdown` in Swift;
         // the model only writes the advice text.
-        let impactHints = topCategories(breakdown).map { "\"budget lever for \($0.category.rawValue), maximum 10 words\"" }
-            .joined(separator: ",")
+        let impactHints = topCategories(breakdown).map { top in
+            "\"one specific cap or swap for \(top.category.rawValue), e.g. cap at NT$\(Self.weeklyCap(top.amount))/week, maximum 10 words\""
+        }.joined(separator: ",")
 
         let systemPrompt = """
         You are a concise budget triage engine for a finance app. \
@@ -86,7 +87,8 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         Keep every string short, practical, and based on NT$ amounts. \
         Write like Copilot Money or YNAB: calm, specific, and action-oriented. \
         Do not use vague urgency phrases like immediate attention, concerning, alarming, or high risk. \
-        Do not invent health claims.
+        Do not invent health claims. \
+        Never suggest cutting a category to zero; suggest a weekly cap or one swap instead.
         """
 
         let userMessage = """
@@ -99,7 +101,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         \(recent)
 
         Complete this JSON using only real values from the data above:
-        {"shortTitle":"3-5 words, no alarm language","quickTake":"one concrete sentence with NT$ amount and percentage, maximum 20 words","primaryAction":"one measurable 7-day action with NT$ target, maximum 16 words","impacts":[\(impactHints)],"note":"one short paragraph with concrete NT$ amounts, maximum 50 words","checklist":["7-day step 1","7-day step 2","7-day step 3"]}
+        {"shortTitle":"3-5 words, no alarm language","quickTake":"one concrete sentence with NT$ amount and percentage, maximum 20 words","primaryAction":"one measurable 7-day action that caps the largest category at a weekly NT$ limit, maximum 16 words","impacts":[\(impactHints)],"note":"one short paragraph with concrete NT$ amounts, maximum 50 words","checklist":["one concrete 7-day step with a number","one concrete 7-day step with a number","one concrete 7-day step with a number"]}
 
         If uncertain, still return the JSON using the category totals. Do not say you need more information.
         """
@@ -172,7 +174,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             return fallback
         }
         // The prompt's JSON is a template with instructions as values; a copied template is not an answer.
-        let templateMarkers = ["maximum 10 words", "no alarm language", "maximum 20 words", "7-day step 1"]
+        let templateMarkers = ["maximum 10 words", "no alarm language", "maximum 20 words", "one concrete 7-day step"]
         guard !templateMarkers.contains(where: cleaned.contains) else {
             PerfMonitor.logParseFailure(source: "finance", reason: "placeholders", raw: text, cleaned: cleaned)
             return fallback
@@ -200,6 +202,11 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             items: items,
             markdownNote: markdownNote
         )
+    }
+
+    /// A weekly cap 25 % below the current monthly pace, at least NT$100.
+    private static func weeklyCap(_ monthlyAmount: Double) -> Int {
+        max(100, Int(monthlyAmount * 0.75 / 4))
     }
 
     /// The three largest categories, which the items and table describe.
@@ -240,7 +247,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         total: Double
     ) -> FinanceInsightPayload {
         let topItems = breakdown.sorted { $0.value > $1.value }.prefix(3).map { category, amount in
-            let weeklyTarget = max(100, Int(amount * 0.75 / 4))
+            let weeklyTarget = Self.weeklyCap(amount)
             let monthlyTrim = max(100, Int(amount * 0.20))
             return FinanceInsightItem(
                 icon: category.icon,
@@ -253,7 +260,7 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
         let topCategory = sorted.first?.key.rawValue ?? "Spending"
         let topAmount = sorted.first?.value ?? total
         let topShare = total > 0 ? Int((topAmount / total) * 100) : 0
-        let weeklyTarget = max(100, Int(topAmount * 0.75 / 4))
+        let weeklyTarget = Self.weeklyCap(topAmount)
         return FinanceInsightPayload(
             shortTitle: "Spending focus this week",
             quickTake: "\(topCategory) leads tracked spending at NT$\(Int(topAmount)), about \(topShare)% of this month.",

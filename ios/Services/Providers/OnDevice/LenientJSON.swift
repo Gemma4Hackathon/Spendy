@@ -5,7 +5,7 @@ import Foundation
 // Gemma 4 E2B makes on long structured outputs (bench/results/phase2-diag-2026-10-21.md):
 // an array closed with `}`, a string missing its closing quote before a newline,
 // a missing final `}`. Values are never changed; only brackets, quotes and trailing
-// commas are added, swapped or removed.
+// commas are added, swapped or removed, and a key left without a value is dropped.
 
 nonisolated enum LenientJSON {
 
@@ -101,6 +101,7 @@ nonisolated enum LenientJSON {
                     continue
                 }
                 if ch != expected { fixes.append("swap_closer") }
+                if expected == "}", removeDanglingKey(&out) { fixes.append("dangling_key") }
                 if removeTrailingComma(&out) { fixes.append("trailing_comma") }
                 out.append(expected)
                 if stack.isEmpty { return (out, fixes) }
@@ -116,11 +117,21 @@ nonisolated enum LenientJSON {
             fixes.append("close_string")
         }
         while let closer = stack.popLast() {
+            if closer == "}", removeDanglingKey(&out) { fixes.append("dangling_key") }
             if removeTrailingComma(&out) { fixes.append("trailing_comma") }
             out.append(closer)
             fixes.append("append_closer")
         }
         return (out, fixes)
+    }
+
+    /// Removes a key with no value just before an object's `}`:
+    /// `{"unit":"%",""}` -> `{"unit":"%"}`. A string right after `{` or `,` is in key position.
+    private static func removeDanglingKey(_ out: inout String) -> Bool {
+        guard let match = out.range(of: #"[{,]\s*"(?:[^"\\]|\\.)*"\s*$"#, options: .regularExpression) else { return false }
+        let keyStart = out[match.lowerBound] == "," ? match.lowerBound : out.index(after: match.lowerBound)
+        out.removeSubrange(keyStart..<out.endIndex)
+        return true
     }
 
     /// Removes a `,` (plus whitespace after it) at the end of `out`. Returns true if removed.

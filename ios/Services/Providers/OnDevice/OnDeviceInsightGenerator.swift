@@ -112,11 +112,17 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             riskScore = min(95, 40 + abnormal.count * 12)
             monthlyAtRisk = Double(Int(totalSpend * 0.45))
 
-            let topCats = SpendingCategory.allCases.compactMap { cat -> (String, Int)? in
+            // Diet-related categories first, so each finding links spending to a health metric
+            // plausibly (an Entertainment-to-HbA1c link reads as nonsense in a demo).
+            let dietRelated: Set<SpendingCategory> = [.beverages, .foodDelivery, .fastFood, .food, .convenienceStore, .coffee, .lateNight]
+            let byAmount = SpendingCategory.allCases.compactMap { cat -> (category: SpendingCategory, total: Int)? in
                 let total = spending.filter { $0.category == cat }.reduce(0) { $0 + $1.amount }
                 guard total > 0 else { return nil }
-                return (cat.rawValue, Int(total))
-            }.sorted { $0.1 > $1.1 }.prefix(2)
+                return (cat, Int(total))
+            }.sorted { $0.total > $1.total }
+            let topCats = (byAmount.filter { dietRelated.contains($0.category) } + byAmount.filter { !dietRelated.contains($0.category) })
+                .prefix(2)
+                .map { ($0.category.rawValue, $0.total) }
             let cat1 = topCats.first.map { "\($0.0) NT$\($0.1)" } ?? "Food Delivery NT$1500"
             let cat2 = topCats.dropFirst().first.map { "\($0.0) NT$\($0.1)" } ?? "Drinks NT$800"
 
@@ -181,7 +187,8 @@ final class OnDeviceInsightGenerator: InsightGenerating {
         Replace every REPLACE value with a concrete sentence based on DATA.
         Every action title must start with a verb and include either a frequency, limit, or NT$ target.
         Every action description must connect the spending behavior to the health metric.
-        Every expectedOutcome must be a patient-friendly 7-day outcome, not a diagnosis.
+        Every expectedOutcome must be a spending or habit result measurable in 7 days (NT$ saved, drinks or orders skipped, minutes walked), never a change in a lab value or a diagnosis.
+        Every risk sentence must say the habit may contribute, not that it caused the lab value.
         Do not create generic example data.
         Do not include query_details or example_data.
         """

@@ -42,8 +42,8 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
     /// 3. Gemma 4 vision runs only if that still finds fewer than 2 metrics, and its values are
     ///    kept only if OCR read them on the metric's own row. On a full page Cactus's fixed
     ///    pixel budget leaves table text about 6 px tall and vision fills gaps with typical
-    ///    values (bench/experiments.md), so it is never trusted unverified while OCR has text.
-    /// 4. If OCR fails outright, vision results are shown labelled as not verified.
+    ///    values (bench/experiments.md), so it is never trusted unverified.
+    /// 4. If OCR fails or finds no text, the image is rejected: no value is shown unverified.
     /// Status, reference range and evidence trace are decided in `HealthReportVerifier`.
     private func extractHealthReportImpl(imageData: Data) async throws -> HealthReport {
         let lines: [OCRLine]
@@ -52,16 +52,13 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
                 try await self.recognizeTextLines(from: imageData)
             }
         } catch {
+            // Without OCR text nothing can be verified, and unverified vision output is
+            // typical values, not readings (a landscape photo returned TC 210, LDL 140).
             print("[HealthExtractor] Apple Vision OCR failed: \(error.localizedDescription)")
-            let visionCandidates = await visionCandidatesIfReady(imageData: imageData)
-            let metrics = HealthReportVerifier.unverified(visionCandidates ?? [])
-            logVerification(path: "vision_unverified", visionRan: visionCandidates != nil, vision: visionCandidates?.count ?? 0,
-                            visionVerified: 0, text: 0, final: metrics.count)
-            guard !metrics.isEmpty else { throw error }
-            return makeReport(metrics, labName: "Gemma 4 Vision (not verified by OCR)")
+            logVerification(path: "ocr_failed", visionRan: false, vision: 0, visionVerified: 0, text: 0, final: 0)
+            throw CactusError.inferenceFailure("The report text could not be read. Please try a clearer photo.")
         }
         guard !lines.isEmpty else {
-            // Nothing to verify against: vision values would be unchecked guesses.
             logVerification(path: "no_text", visionRan: false, vision: 0, visionVerified: 0, text: 0, final: 0)
             throw CactusError.inferenceFailure("No report text was found in the selected image.")
         }
@@ -204,11 +201,8 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
                             height: Double(observation.boundingBox.height)
                         )
                     }
-                    if lines.isEmpty {
-                        resumeOnce(.failure(CactusError.inferenceFailure("No text was recognized in the selected image.")))
-                    } else {
-                        resumeOnce(.success(lines))
-                    }
+                    // No text is a result, not an OCR failure: the caller rejects the image.
+                    resumeOnce(.success(lines))
                 }
                 request.recognitionLevel = .accurate
                 request.usesLanguageCorrection = false

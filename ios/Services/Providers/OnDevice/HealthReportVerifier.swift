@@ -83,6 +83,8 @@ nonisolated enum HealthReportVerifier {
             let reference = Reference.match(tokens(candidate.name))
             let key = reference?.key ?? normalizedKey(candidate.name)
             guard !seenKeys.contains(key) else { continue }
+            // An OCR misread can still be "on the report" ("2.0" read as "20" for a ratio).
+            if let plausible = plausibleReadings[key], let number = Double(value), !plausible.contains(number) { continue }
 
             let row = rowEvidence(value: value, reference: reference, name: candidate.name, lines: lines)
             if row == nil {
@@ -91,7 +93,7 @@ nonisolated enum HealthReportVerifier {
 
             seenKeys.insert(key)
             result.append(resolve(candidate, value: value, reference: reference, key: key,
-                                  row: row, hasOCR: true))
+                                  row: row))
         }
         return result
     }
@@ -136,19 +138,6 @@ nonisolated enum HealthReportVerifier {
         "bmi": 10...80, "hemoglobin": 3...250, "platelets": 10...1500
     ]
 
-    /// Used when OCR found no text: nothing to check against, so values are kept as read.
-    static func unverified(_ candidates: [MetricCandidate]) -> [VerifiedMetric] {
-        var seenKeys = Set<String>()
-        return candidates.compactMap { candidate in
-            guard let value = normalizedValue(candidate.value) else { return nil }
-            let reference = Reference.match(tokens(candidate.name))
-            let key = reference?.key ?? normalizedKey(candidate.name)
-            guard seenKeys.insert(key).inserted else { return nil }
-            return resolve(candidate, value: value, reference: reference, key: key,
-                           row: nil, hasOCR: false)
-        }
-    }
-
     /// One patient-facing sentence per metric, consistent with the final value and status.
     static func evidenceTrace(for metrics: [VerifiedMetric]) -> [String] {
         metrics.map { metric in
@@ -175,16 +164,15 @@ nonisolated enum HealthReportVerifier {
         value: String,
         reference: Reference?,
         key: String,
-        row: RowEvidence?,
-        hasOCR: Bool
+        row: RowEvidence?
     ) -> VerifiedMetric {
         // Reference range printed on the report: prefer what OCR read on the metric's own row.
         // The model's range counts only if its numbers are on that row (it can shift the
-        // range column by one row), or if there is no OCR to check against.
+        // range column by one row).
         let modelRange = candidate.normalRange.trimmingCharacters(in: .whitespacesAndNewlines)
         let modelRangeNumbers = allNumbers(in: modelRange)
         let modelRangeOnRow = !modelRangeNumbers.isEmpty
-            && (row.map { row in modelRangeNumbers.allSatisfy { row.numbers.contains($0) } } ?? !hasOCR)
+            && (row.map { row in modelRangeNumbers.allSatisfy { row.numbers.contains($0) } } ?? false)
         let printedRange = row?.rangeText ?? (modelRangeOnRow ? modelRange : nil)
         let parsedRange = printedRange.flatMap(NumericRange.init)
         let number = Double(value)
@@ -206,7 +194,6 @@ nonisolated enum HealthReportVerifier {
         }
 
         let displayRange = printedRange ?? reference?.range ?? ""
-        let verified = hasOCR
 
         let unit = candidate.unit.trimmingCharacters(in: .whitespacesAndNewlines)
         return VerifiedMetric(
@@ -217,7 +204,7 @@ nonisolated enum HealthReportVerifier {
             normalRange: displayRange,
             status: status,
             statusBasis: basis,
-            verified: verified
+            verified: true
         )
     }
 
