@@ -83,11 +83,16 @@ Baseline = 5 rounds, each phase = 3 rounds. Ground truth for the sample report i
   done (`bench/results/phase2-2026-10-21.md`, commit `29208e0`). 0 JSON failures, 0 reloads, Insights 1 inference,
   fully deterministic. IMG_9596 8/8; IMG_9603 2/8 (text model skipped the lipid panel). Scans 213-325 s,
   Insights 192 s, Finance 41 s. Vision still invents values and contributes nothing to the final result.
-- After the benchmark: `bd0c74a` fills metrics from OCR table rows. Confirmed on device: IMG_9603 7/8
-  (Cholesterol/HDL Ratio dropped: OCR reads "2.0" as "20").
+- After the benchmark: `bd0c74a` fills metrics from OCR table rows. Confirmed on device: IMG_9603 7/8.
+- Phase 3 (OCR first, vision fallback only, shorter outputs, all numbers in Swift): done
+  (`bench/results/phase3-2026-10-22.md`, commit `d8b9d67`). Scan 22 s, Insights 84 s, Finance 21 s, scan peak
+  786 MB, 8/8 on both images, 0 parse failures. Phase 3 used a different export of IMG_9603 (425,910 bytes);
+  IMG_9596 is the identical-input comparison.
+- Vision root cause (confirmed): Cactus's fixed pixel budget leaves table text about 6 px tall; a cropped table
+  reads 7/8 at the same budget. Story for interviews: `docs/case-study.md`.
+- Regression check for verifier changes: `bench/replay` (replays logged device scans; see header).
 
 ## Next
 
-Optimization phase (latency is decode-bound, about 4 tok/s on 1,000+ token contexts): shorten output schemas
-   for health, Insights and Finance (check which fields the UI uses before removing any); decide what to do
-   about vision (96-170 s per scan, no confirmed values). Measure with the same 3-round protocol.
+- Insights advice quality: some actions set a category to zero or call a month of spending a 7-day saving.
+- Optional: OCR-guided crop for the vision fallback (`docs/case-study.md`, What I would do next).

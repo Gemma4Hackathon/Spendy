@@ -10,19 +10,21 @@ measured", one evidence-backed change at a time. Raw numbers live in `bench/resu
 
 | Metric | Baseline | Phase 1 | Phase 2 | Phase 3 |
 |---|---|---|---|---|
-| Text prompts silently dropped | 35 % | 0 % | 0 % | |
-| Vision out-of-memory (`std::bad_alloc`) | 5/10 scans | 0/6 | 0/6 | |
-| Model output that failed JSON parsing | not measured | frequent | 0/18 | |
-| Lab values correct, flat scan (IMG_9603) | 2-3/8 | 0-2/8 | 2/8, then 7/8 after case 5 | |
-| Lab values correct, photo of a screen (IMG_9596) | 1-2/8 | 1-2/8 | 8/8 | |
-| Wrong values shown to the user | yes | yes (invented) | none | |
-| Health-scan peak memory (limit 3,072 MB) | 2,065 MB | 1,774 MB | 1,779 MB | |
-| Health scan, median | 140 s | 180 s | 269 s | |
-| Insights | 171 s | 295 s | 192 s | |
-| Finance summary | not meaningful (prompt dropped) | 53 s | 41 s | |
-| Same input gives same output | no | partly | yes, token-for-token | |
+| Text prompts silently dropped | 35 % | 0 % | 0 % | 0 % |
+| Vision out-of-memory (`std::bad_alloc`) | 5/10 scans | 0/6 | 0/6 | 0 (vision not needed) |
+| Model output that failed JSON parsing | not measured | frequent | 0/18 | 0/12 |
+| Lab values correct, flat scan (IMG_9603)* | 2-3/8 | 0-2/8 | 2/8, then 7/8 after case 5 | 8/8 |
+| Lab values correct, photo of a screen (IMG_9596) | 1-2/8 | 1-2/8 | 8/8 | 8/8 |
+| Wrong values shown to the user | yes | yes (invented) | none | none |
+| Health-scan peak memory (limit 3,072 MB) | 2,065 MB | 1,774 MB | 1,779 MB | 786 MB |
+| Health scan, median | 140 s | 180 s | 269 s | **22 s** |
+| Insights | 171 s | 295 s | 192 s | **84 s** |
+| Finance summary | not meaningful (prompt dropped) | 53 s | 41 s | **21 s** |
+| Same input gives same output | no | partly | yes, token-for-token | yes |
 
-Phase 2 traded scan latency for correctness on purpose; phase 3 targets latency.
+Phase 2 traded scan latency for correctness on purpose; phase 3 took it back (12x faster scans)
+without giving up accuracy. *Phase 3 scanned a different export of IMG_9603 (165 vs 160 OCR lines);
+IMG_9596 is the identical-input comparison: 147 s baseline, 310 s phase 2, 22.5 s phase 3.
 
 ## Setup and constraints
 
@@ -136,10 +138,27 @@ Phase 2 traded scan latency for correctness on purpose; phase 3 targets latency.
 
 ## Case 6: latency (phase 3)
 
-_In progress. Plan: run OCR first and use vision only as a fallback (vision cost 96-170 s per
-scan and contributed no displayed value), and stop asking the model for fields that Swift already
-computes or the UI never shows (health status, ranges and evidence; Insights scores; Finance
-amounts)._
+- **Symptom.** Correct but slow: scans 213-325 s, Insights 192 s. Latency is decode-bound
+  (about 4-7 tok/s on CPU), and two things were spending most of the tokens.
+- **Evidence.** (1) Vision cost 96-170 s per scan and contributed no displayed value (case 4).
+  (2) Much of every output was fields Swift already decides or the UI never shows: health status,
+  ranges and evidence text (decided by the verifier); Insights risk score and amount at risk
+  (computed in Swift, then copied back by the model); icons, colors, timeframes.
+- **Fix.** OCR first; vision only as a fallback when OCR finds fewer than 2 metrics, and even then
+  only OCR-confirmed values are shown. The model is asked only for what needs language: health
+  `name/value/unit`; Insights advice sentences; Finance summary sentences. Every number the user
+  sees (amounts, caps, scores, lab values and flags) is computed in Swift.
+- **Result.** Scan 269 s to **22 s** (identical-input image: 310 s to 22.5 s), Insights 192 s to
+  **84 s**, Finance 41 s to **21 s**, scan peak memory 1.78 GB to **0.79 GB**, accuracy 8/8 on both
+  images, 0 parse failures, deterministic across rounds.
+- **Bugs the device runs caught before the benchmark.** A landscape photo returned four invented lab
+  values through the "OCR failed, show vision unverified" path, so that path was removed: nothing
+  unverified is ever displayed. The table reader turned the HbA1c unit "% of total Hgb" into a
+  phantom "Hemoglobin 115". The model computed a weekly cap of NT$765 for an NT$800 month, which
+  is why arithmetic moved to Swift. Each fix was regression-tested by replaying every logged
+  iPhone scan through the verifier on the Mac (`bench/replay`).
+- **Thermal.** The phone reached `serious` by the last flow in every round; decode speed varies
+  with context length and temperature (6.3 to 10 tok/s), which is now logged per inference.
 
 ## What I would do next
 

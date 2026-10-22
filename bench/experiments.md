@@ -54,3 +54,17 @@ reads "2.0" as "20". Vision decode 751 tokens, 114 s, peak 1,725 MB. Conclusion:
 full page come from Cactus's fixed pixel budget (`model_gemma4_vision.cpp`: about
 `budget x 9 x 16^2` px, 432x672 for this page, table text about 6 px tall), not from the model's
 ability to read the table.
+
+## Phase 3: OCR-first scan and shorter outputs
+
+Results: `bench/results/phase3-2026-10-22.md`.
+
+| Change | Where | Reason |
+|---|---|---|
+| OCR first; Gemma 4 vision only when OCR finds fewer than 2 metrics, values shown only if OCR confirms them on their row; no text or OCR failure rejects the image | `OnDeviceHealthReportExtractor.swift` | Vision cost 96-170 s per scan with no displayed value; a landscape photo produced invented values through the unverified path |
+| Health prompts ask for `name/value/unit` only | same | status, range and evidence are decided in `HealthReportVerifier` |
+| Insights: scores, amounts, icons, colors, causes, health details, targets and timeframes filled in Swift; findings paired with diet-related categories first; outcomes must be 7-day behavior results, not lab changes | `OnDeviceInsightGenerator.swift` | fewer output tokens; the model promised lab changes in 7 days and linked Entertainment to HbA1c |
+| Finance: items, amounts, weekly caps and table computed in Swift; model writes summary sentences | `OnDeviceFinanceSummaryProvider.swift` | the model miscalculated caps (NT$765/week for NT$800/month) |
+| Plausibility ranges on every verified value; value lines are never metric names; "total ... Hgb" is not hemoglobin | `HealthReportVerifier.swift` | ratio "20" (OCR misread) and a phantom "Hemoglobin 115" from the HbA1c unit |
+| `LenientJSON` drops a key without a value | `LenientJSON.swift` | `"unit":"%",""}` |
+| `thermal_state` per inference; full parsed outputs in verbose logs; `bench/replay` | `PerfMonitor.swift`, `bench/` | explain decode variance; review output quality; regression-test the verifier on logged device scans |
