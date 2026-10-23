@@ -179,8 +179,8 @@ identical-input comparison: 147 s baseline, 310 s phase 2, 22.5 s phase 3, 12.4 
   value is on the report, but the report rates it "Slightly Increased" on a graphic scale, so risk
   estimates are no longer shown as lab results. (2) Finance wrote "Limit Late Night spending to
   NT$210 per week"; NT$210 is the Food Delivery cap (Late Night runs about NT$77 a week), so an
-  amount must now belong to the category the sentence names. Replaying all 276 logged model
-  sentences (`bench/guardrail_replay`): 48 flagged, every one actually wrong.
+  amount must now belong to the category the sentence names. Replaying all 328 logged model
+  sentences through the final rounds (`bench/guardrail_replay`): 52 flagged, every one actually wrong.
 - **Result.** OCR-text prefill 1,220 to 640 tokens; scans 22 s to **12 s**; 8/8 on both images; the
   guardrail replaces the one wrong Finance sentence every round. 37 unit tests on real device OCR and
   model outputs run with `swift test`; each new rule was mutation-checked.

@@ -83,4 +83,4 @@ Results: `bench/results/phase4-2026-10-22.md` (`phase4-r1..r3` before the Insigh
 | Insights progress from streamed partial JSON; real scan stages and specific errors | `InsightProgress.swift`, `HealthReportExtracting.swift`, views | 80-120 s behind a spinner; generic error text |
 | Insights split: model writes plan and risk sentences only; Swift writes causes, caps, actions, outcomes; risk reasons per metric from Swift; `maxTokens` 1000 to 400 | `InsightComposer.swift` | Insights regressed to 122 s (578 output tokens restating amounts); 1,138 / 578 to 592 / 182 tokens, 26 s |
 | Mac harness: device messages rebuilt from a log (hash-checked) and run with Cactus built for macOS | `bench/mac_insights` | byte-identical to the iPhone for greedy decoding; prompt drafts checked without the phone |
-| Guardrail replay over logged answers | `bench/guardrail_replay` | new rules checked for false positives on 276 real sentences |
+| Guardrail replay over logged answers | `bench/guardrail_replay` | new rules checked for false positives on real sentences (328 through the final rounds, 52 flagged, all wrong) |
