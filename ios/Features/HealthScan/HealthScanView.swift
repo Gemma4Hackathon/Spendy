@@ -164,7 +164,9 @@ struct HealthScanView: View {
                 } label: {
                     HStack {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(SpendyTheme.healthOK)
-                        Text("View Parsed Report").font(.subheadline).foregroundStyle(SpendyTheme.healthOK)
+                        // After a failed scan the saved report is the previous one, not this image.
+                        Text(failedStage == nil ? "View Parsed Report" : "View Previous Report")
+                            .font(.subheadline).foregroundStyle(SpendyTheme.healthOK)
                         Image(systemName: "chevron.right").font(.caption).foregroundStyle(SpendyTheme.textMuted)
                     }
                 }

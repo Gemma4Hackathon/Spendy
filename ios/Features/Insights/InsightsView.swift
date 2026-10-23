@@ -344,16 +344,18 @@ struct InsightsView: View {
     private var emptyState: some View {
         VStack(spacing: 20) {
             analysisMonthPicker
-            Image(systemName: "sparkles").font(.system(size: 52)).foregroundStyle(SpendyTheme.textMuted)
-            Text("No insights yet").font(.title3).fontWeight(.semibold).foregroundStyle(.white)
-            if let err = errorMessage {
-                Text(err)
-                    .font(.caption).foregroundStyle(SpendyTheme.healthBad)
-                    .multilineTextAlignment(.center)
-            } else {
-                Text("Complete a health scan and use a month with spending, then tap Generate Insights.")
-                    .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)
-                    .multilineTextAlignment(.center)
+            if !isGenerating {
+                Image(systemName: "sparkles").font(.system(size: 52)).foregroundStyle(SpendyTheme.textMuted)
+                Text("No insights yet").font(.title3).fontWeight(.semibold).foregroundStyle(.white)
+                if let err = errorMessage {
+                    Text(err)
+                        .font(.caption).foregroundStyle(SpendyTheme.healthBad)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Text("Complete a health scan and use a month with spending, then tap Generate Insights.")
+                        .font(.subheadline).foregroundStyle(SpendyTheme.textMuted)
+                        .multilineTextAlignment(.center)
+                }
             }
             if isGenerating {
                 progressCard
