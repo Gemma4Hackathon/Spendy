@@ -8,23 +8,25 @@ measured", one evidence-backed change at a time. Raw numbers live in `bench/resu
 
 ## Summary
 
-| Metric | Baseline | Phase 1 | Phase 2 | Phase 3 |
-|---|---|---|---|---|
-| Text prompts silently dropped | 35 % | 0 % | 0 % | 0 % |
-| Vision out-of-memory (`std::bad_alloc`) | 5/10 scans | 0/6 | 0/6 | 0 (vision not needed) |
-| Model output that failed JSON parsing | not measured | frequent | 0/18 | 0/12 |
-| Lab values correct, flat scan (IMG_9603)* | 2-3/8 | 0-2/8 | 2/8, then 7/8 after case 5 | 8/8 |
-| Lab values correct, photo of a screen (IMG_9596) | 1-2/8 | 1-2/8 | 8/8 | 8/8 |
-| Wrong values shown to the user | yes | yes (invented) | none | none |
-| Health-scan peak memory (limit 3,072 MB) | 2,065 MB | 1,774 MB | 1,779 MB | 786 MB |
-| Health scan, median | 140 s | 180 s | 269 s | **22 s** |
-| Insights | 171 s | 295 s | 192 s | **84 s** |
-| Finance summary | not meaningful (prompt dropped) | 53 s | 41 s | **21 s** |
-| Same input gives same output | no | partly | yes, token-for-token | yes |
+| Metric | Baseline | Phase 1 | Phase 2 | Phase 3 | Phase 4 |
+|---|---|---|---|---|---|
+| Text prompts silently dropped | 35 % | 0 % | 0 % | 0 % | 0 % |
+| Vision out-of-memory (`std::bad_alloc`) | 5/10 scans | 0/6 | 0/6 | 0 (vision not needed) | 0 (vision not needed) |
+| Model output that failed JSON parsing | not measured | frequent | 0/18 | 0/12 | 0/12 |
+| Lab values correct, flat scan (IMG_9603)* | 2-3/8 | 0-2/8 | 2/8, then 7/8 after case 5 | 8/8 | 8/8 |
+| Lab values correct, photo of a screen (IMG_9596) | 1-2/8 | 1-2/8 | 8/8 | 8/8 | 8/8 |
+| Wrong values shown to the user | yes | yes (invented) | none | none | none |
+| Model advice checked before display | no | no | no | no | every sentence |
+| Health-scan peak memory (limit 3,072 MB) | 2,065 MB | 1,774 MB | 1,779 MB | 786 MB | 763 MB |
+| Health scan, median | 140 s | 180 s | 269 s | 22 s | **12 s** |
+| Insights | 171 s | 295 s | 192 s | 84 s | **26 s** |
+| Finance summary | not meaningful (prompt dropped) | 53 s | 41 s | 21 s | 25 s |
+| Same input gives same output | no | partly | yes, token-for-token | yes | yes, and the Mac matches the iPhone |
 
 Phase 2 traded scan latency for correctness on purpose; phase 3 took it back (12x faster scans)
-without giving up accuracy. *Phase 3 scanned a different export of IMG_9603 (165 vs 160 OCR lines);
-IMG_9596 is the identical-input comparison: 147 s baseline, 310 s phase 2, 22.5 s phase 3.
+without giving up accuracy; phase 4 made the model's advice checkable and cut Insights from 84 s to
+26 s. *Phase 3 and 4 scanned a different export of IMG_9603 (165 vs 160 OCR lines); IMG_9596 is the
+identical-input comparison: 147 s baseline, 310 s phase 2, 22.5 s phase 3, 12.4 s phase 4.
 
 ## Setup and constraints
 
@@ -160,11 +162,67 @@ IMG_9596 is the identical-input comparison: 147 s baseline, 310 s phase 2, 22.5 
 - **Thermal.** The phone reached `serious` by the last flow in every round; decode speed varies
   with context length and temperature (6.3 to 10 tok/s), which is now logged per inference.
 
+## Case 7: data minimization and checking the model's advice (phase 4)
+
+- **Symptom.** Scans were prefill-bound (TTFT 13-17 s of 20-24 s), and the model's advice still had
+  wrong numbers that prompt rules kept chasing: a NT$765/week cap for an NT$800 month, a month of
+  spending called a 7-day saving, categories cut to zero, lab values promised to improve in 7 days.
+- **Fix, input side.** Gemma 4 gets only the OCR lines Swift has not read: verified table rows, flag
+  and reference-range columns, patient and specimen rows, duplicates and long prose are left out
+  (165 to 68 lines). Patient details never reach the model.
+- **Fix, output side.** Every sentence the model writes is checked before display
+  (`OutputGuardrail`): each NT$ amount must be one Swift computed, a monthly total next to "per week"
+  is a unit error, "to zero" is rejected, outcomes may not promise lab changes, and causal claims
+  must be hedged. A failing field is replaced by Swift-written text and counted in the log.
+- **What the device runs caught next.** Two errors passed the first version, and each became a rule
+  with a failing test first: (1) the screen photo produced "Diabetes Risk 7 %" shown as Normal; the
+  value is on the report, but the report rates it "Slightly Increased" on a graphic scale, so risk
+  estimates are no longer shown as lab results. (2) Finance wrote "Limit Late Night spending to
+  NT$210 per week"; NT$210 is the Food Delivery cap (Late Night runs about NT$77 a week), so an
+  amount must now belong to the category the sentence names. Replaying all 276 logged model
+  sentences (`bench/guardrail_replay`): 48 flagged, every one actually wrong.
+- **Result.** OCR-text prefill 1,220 to 640 tokens; scans 22 s to **12 s**; 8/8 on both images; the
+  guardrail replaces the one wrong Finance sentence every round. 37 unit tests on real device OCR and
+  model outputs run with `swift test`; each new rule was mutation-checked.
+
+## Case 8: an Insights regression, and a Mac that answers like the iPhone (phase 4)
+
+- **Symptom.** With case 7 in place, Insights slowed from 84 s to **122 s**. Measuring every phase
+  is what caught it: a correctness fix (weekly targets for every diet category in the prompt) had
+  made the prompt longer, and the model then restated the amount and the health sentence in every
+  action description (121 to 505 characters; 578 output tokens).
+- **Evidence.** Decode speed on this CPU path falls with context length: OCR text decoded at
+  6.4-6.9 tok/s with about 1,220 tokens of context and 9.2-9.5 with about 640; Insights ran at
+  5.1-5.9 tok/s. A longer prompt makes every output token slower, not just prefill.
+- **Fix.** Split the work by what each side is good at. The model writes only what needs wording:
+  the movement and food plan and one sentence per finding on why a habit may affect a metric.
+  Swift writes cause details, weekly caps, actions and 7-day outcomes from fixed templates, which a
+  test checks against the guardrail for every category at NT$10-5,000. The diet reasons per metric
+  come from Swift too, after a draft gave "high sodium" as a reason for HbA1c.
+- **Testing prompts without the phone.** Cactus builds for macOS. The Mac harness
+  (`bench/mac_insights`) rebuilds the exact device messages from a log (same `messages_hash`) and
+  produced a byte-identical answer to the iPhone's, so prompt drafts could be judged on the Mac.
+  Drafts there caught a risk sentence about the wrong category and a plan promising better
+  glucose; both are now replaced by the composer and covered by tests that use those real answers.
+- **Result.** Insights **122 s to 26 s** (prefill 1,138 to 592 tokens, decode 578 to 182, decode
+  5.3 to 9.1 tok/s), 0 fields replaced, identical output in every round. The device run matched the
+  Mac's prediction exactly (hash, token counts and the 640-character answer).
+- **Trade-off.** Actions are now templates, so they vary less between users. In a health app,
+  correct and predictable beat varied.
+
+Also in phase 4: Insights shows real progress from the streamed JSON (finished sections, current
+step, elapsed seconds) instead of a spinner; the scan screen shows the real pipeline steps and a
+specific error; a photo with no digits is rejected in 0.3 s instead of running vision for 19 s.
+
 ## What I would do next
 
 - **OCR-guided crop for vision.** Case 4 shows vision reads a cropped table correctly at the same
   memory cost. OCR bounding boxes already locate the results table, so the vision fallback could
   be fed that crop instead of the whole page.
+- **Apply the case 8 split to Finance.** Its checklist is the one field the guardrail still replaces
+  every round; generating it in Swift would also save output tokens.
+- **Run the Mac harness on every prompt change**, comparing output and token counts with the last
+  device run before anyone picks up the phone.
 
 ## Lessons
 
@@ -172,5 +230,7 @@ IMG_9596 is the identical-input comparison: 147 s baseline, 310 s phase 2, 22.5 
 - Many "model quality" problems were interface or sampling problems: key order, a default
   repetition penalty, a fixed pixel budget.
 - Keep the model on the part it is good at (structuring and writing) and keep facts that can be
-  checked deterministically (values, flags, totals) in code.
+  checked deterministically (values, flags, totals, caps) in code.
 - Greedy decoding made the benchmark reproducible and every regression debuggable from one run.
+- Measure every phase, including after correctness fixes: case 8's regression came from one.
+- Prove a proxy before trusting it: byte-identical output is what made the Mac a valid test bench.

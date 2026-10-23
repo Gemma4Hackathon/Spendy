@@ -68,3 +68,19 @@ Results: `bench/results/phase3-2026-10-22.md`.
 | Plausibility ranges on every verified value; value lines are never metric names; "total ... Hgb" is not hemoglobin | `HealthReportVerifier.swift` | ratio "20" (OCR misread) and a phantom "Hemoglobin 115" from the HbA1c unit |
 | `LenientJSON` drops a key without a value | `LenientJSON.swift` | `"unit":"%",""}` |
 | `thermal_state` per inference; full parsed outputs in verbose logs; `bench/replay` | `PerfMonitor.swift`, `bench/` | explain decode variance; review output quality; regression-test the verifier on logged device scans |
+
+## Phase 4: data minimization, guardrails, streaming, tests
+
+Results: `bench/results/phase4-2026-10-22.md` (`phase4-r1..r3` before the Insights split, `phase4-final-r1..r3` after).
+
+| Change | Where | Reason |
+|---|---|---|
+| SwiftPM package over the pure logic; `swift test` on the Mac (37 tests, fixtures from device OCR and model answers) | `Package.swift`, `Tests/SpendyCoreTests` | verification lived in scratch scripts; no regression net |
+| OCR prompt keeps only lines Swift has not read: no verified table rows, flags, ranges, patient/specimen rows, duplicates or prose | `OCRPromptBuilder.swift`, extractor | prefill-bound scans; patient details do not need to reach the model. 165 to 68 lines, prefill 1,220 to 640 tokens |
+| Output guardrail on every model sentence (amount must be Swift-computed and belong to the named category, monthly-as-weekly, zero targets, lab promises, unhedged causal claims); failing fields replaced by Swift text, `event=guardrail` logged | `OutputGuardrail.swift`, Finance and Insights | prompt rules alone kept missing wrong numbers; `wrong_category` added after "Late Night NT$210/week" (Food Delivery's cap) |
+| Risk estimates ("8-Year Diabetes Risk 7%") not shown as lab results | `HealthReportVerifier.swift` | rated on a graphic scale the app cannot read; shown as Normal, report says Slightly Increased |
+| Vision fallback skipped when OCR text has no digits | extractor | a landscape photo ran vision for 19 s (1,474 MB peak) with nothing to confirm against |
+| Insights progress from streamed partial JSON; real scan stages and specific errors | `InsightProgress.swift`, `HealthReportExtracting.swift`, views | 80-120 s behind a spinner; generic error text |
+| Insights split: model writes plan and risk sentences only; Swift writes causes, caps, actions, outcomes; risk reasons per metric from Swift; `maxTokens` 1000 to 400 | `InsightComposer.swift` | Insights regressed to 122 s (578 output tokens restating amounts); 1,138 / 578 to 592 / 182 tokens, 26 s |
+| Mac harness: device messages rebuilt from a log (hash-checked) and run with Cactus built for macOS | `bench/mac_insights` | byte-identical to the iPhone for greedy decoding; prompt drafts checked without the phone |
+| Guardrail replay over logged answers | `bench/guardrail_replay` | new rules checked for false positives on 276 real sentences |

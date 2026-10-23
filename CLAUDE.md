@@ -2,7 +2,8 @@
 
 Handoff notes for continuing the Spendy optimization work in Claude Code. Read this first, then
 `bench/README.md`, `bench/experiments.md`, `bench/results/baseline-2026-10-21.md`,
-`bench/results/phase1-2026-10-21.md` and `bench/results/phase2-2026-10-21.md`.
+`bench/results/phase1-2026-10-21.md` and `bench/results/phase2-2026-10-21.md`. The full story is
+`docs/case-study.md`; the latest numbers are `bench/results/phase4-2026-10-22.md`.
 
 ## Working rules (from John)
 
@@ -90,9 +91,20 @@ Baseline = 5 rounds, each phase = 3 rounds. Ground truth for the sample report i
   IMG_9596 is the identical-input comparison.
 - Vision root cause (confirmed): Cactus's fixed pixel budget leaves table text about 6 px tall; a cropped table
   reads 7/8 at the same budget. Story for interviews: `docs/case-study.md`.
-- Regression check for verifier changes: `bench/replay` (replays logged device scans; see header).
+- Phase 4 (OCR prompt minimization, output guardrail, streaming progress, UI fixes, Insights split): done
+  (`bench/results/phase4-2026-10-22.md`, commit `41a26bf`). Scan 12 s, Insights 26 s, Finance 25 s, scan peak
+  763 MB, 8/8 on both images, 0 parse failures, Insights output identical every round.
+
+## Checks before a device run
+
+- `swift test` at the repo root (pure logic in `Package.swift`; runs outside the sandbox).
+- `bench/replay`: verifier changes against every logged device scan.
+- `bench/guardrail_replay`: guardrail rules against every logged Finance/Insights sentence.
+- `bench/mac_insights`: rebuilds the device Insights prompt from a log and runs it with Cactus on the Mac;
+  greedy output is byte-identical to the iPhone. `libcactus.dylib` is built outside the cactus repo
+  (commands in `run.py`). Check `messages_hash` against the device log before trusting a run.
 
 ## Next
 
-- Insights advice quality: some actions set a category to zero or call a month of spending a 7-day saving.
+- Optional: move the Finance checklist to Swift (the guardrail replaces one item every round).
 - Optional: OCR-guided crop for the vision fallback (`docs/case-study.md`, What I would do next).
