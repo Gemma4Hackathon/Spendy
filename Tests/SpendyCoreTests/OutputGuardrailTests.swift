@@ -6,7 +6,10 @@ import Testing
 /// Coffee 285, Convenience Store 215, Sugary Drinks 150; total 3825.
 struct OutputGuardrailTests {
 
-    private let context = OutputGuardrail.Context(monthlyByCategory: [1150, 800, 520, 395, 310, 285, 215, 150], extra: [3825, 1721])
+    private let context = OutputGuardrail.Context(monthlyByCategory: [
+        "Food Delivery": 1150, "Entertainment": 800, "Groceries": 520, "Fast Food": 395,
+        "Late Night": 310, "Coffee": 285, "Convenience Store": 215, "Sugary Drinks": 150,
+    ], extra: [3825, 1721])
 
     @Test(arguments: [
         ("Cap Entertainment at NT$765/week, maximum one entertainment outing per week.", OutputGuardrail.Violation.unknownAmount),
@@ -16,6 +19,8 @@ struct OutputGuardrailTests {
         ("Reduce coffee spending to zero.", .zeroTarget),
         ("Reduce Food Delivery spending by NT$1150 to improve cash flow.", .zeroTarget),
         ("Cap Sugary Drinks spending at NT$150 per week.", .monthlyAsWeekly),
+        // Phase 4 Finance checklist: NT$210 is the Food Delivery cap; Late Night is about NT$77/week.
+        ("Limit Late Night spending to NT$210 per week.", .wrongCategory),
     ])
     func catchesWhatTheModelGotWrong(text: String, expected: OutputGuardrail.Violation) {
         #expect(OutputGuardrail.check(text, context: context).contains(expected), "\(text)")
@@ -34,6 +39,8 @@ struct OutputGuardrailTests {
         "Limit Food Delivery to NT$210 per week by reducing delivery frequency.",
         "Food Delivery is NT$1150 this month, about NT$287 per week.",
         "Swap one sugary drink for a zero-sugar option.",
+        "Reduce Late Night spending to NT$50/week to reduce exposure to high-calorie intake.",
+        "Cut Fast Food spending to NT$70/week to reduce exposure to high-calorie intake that may contribute to Hemoglobin A1c.",
         "This may help support Glucose and Hemoglobin A1c levels.",
     ])
     func acceptsCorrectSentences(text: String) {

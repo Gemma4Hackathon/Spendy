@@ -111,7 +111,9 @@ final class OnDeviceFinanceSummaryProvider: FinanceSummaryProviding {
             maxTokens: 500,
             temperature: 0
         )
-        let guardrail = OutputGuardrail.Context(monthlyByCategory: breakdown.values.map { Int($0) }, extra: [Int(total)])
+        let guardrail = OutputGuardrail.Context(
+            monthlyByCategory: Dictionary(uniqueKeysWithValues: breakdown.map { ($0.key.rawValue, Int($0.value)) }),
+            extra: [Int(total)])
         return parseFinanceInsight(from: text, guardrail: guardrail, fallback: fallbackInsight(breakdown: breakdown, total: total))
     }
 

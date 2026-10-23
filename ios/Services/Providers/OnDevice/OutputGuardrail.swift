@@ -14,6 +14,7 @@ nonisolated enum OutputGuardrail {
         case zeroTarget = "zero_target"
         case monthlyAsWeekly = "monthly_as_weekly"
         case labPromise = "lab_promise"
+        case wrongCategory = "wrong_category"
     }
 
     struct Context {
@@ -21,17 +22,23 @@ nonisolated enum OutputGuardrail {
         let allowedAmounts: Set<Int>
         /// Monthly totals; one next to "per week" or "in 7 days" is a unit error.
         let monthlyAmounts: Set<Int>
+        /// Each category's monthly total, weekly pace, cap and saving, keyed by lowercased name.
+        let amountsByCategory: [String: Set<Int>]
+        /// Amounts not tied to one category (overall total, amount at risk).
+        let sharedAmounts: Set<Int>
 
-        /// Monthly totals per category plus their weekly pace, cap and saving.
-        init(monthlyByCategory: [Int], extra: [Int] = []) {
-            var allowed = Set(monthlyByCategory + extra)
-            for monthly in monthlyByCategory {
+        /// Monthly totals per category name plus their weekly pace, cap and saving.
+        init(monthlyByCategory: [String: Int], extra: [Int] = []) {
+            var byCategory: [String: Set<Int>] = [:]
+            for (category, monthly) in monthlyByCategory {
                 let pace = SpendingTargets.weeklyPace(Double(monthly))
                 let cap = SpendingTargets.weeklyCap(Double(monthly))
-                allowed.formUnion([pace, cap, max(0, pace - cap)])
+                byCategory[category.lowercased()] = [monthly, pace, cap, max(0, pace - cap)]
             }
-            allowedAmounts = allowed
-            monthlyAmounts = Set(monthlyByCategory)
+            amountsByCategory = byCategory
+            sharedAmounts = Set(extra)
+            allowedAmounts = byCategory.values.reduce(Set(extra)) { $0.union($1) }
+            monthlyAmounts = Set(monthlyByCategory.values)
         }
     }
 
@@ -50,6 +57,11 @@ nonisolated enum OutputGuardrail {
         if amounts.contains(where: context.monthlyAmounts.contains),
            context.monthlyAmounts.contains(where: { monthlyLabelledWeekly($0, in: text) }) {
             violations.append(.monthlyAsWeekly)
+        }
+        // "Limit Late Night spending to NT$210 per week": 210 is the Food Delivery cap.
+        if let category = onlyCategory(in: text, context: context),
+           amounts.contains(where: { !context.amountsByCategory[category, default: []].contains($0) && !context.sharedAmounts.contains($0) }) {
+            violations.append(.wrongCategory)
         }
         if isOutcome && promisesLabChange(text) {
             violations.append(.labPromise)
@@ -92,6 +104,12 @@ nonisolated enum OutputGuardrail {
         return (regex?.matches(in: text, range: range) ?? []).compactMap { match in
             Range(match.range(at: 1), in: text).flatMap { Int(text[$0].replacingOccurrences(of: ",", with: "")) }
         }
+    }
+
+    /// The category a sentence is about, when it names exactly one.
+    private static func onlyCategory(in text: String, context: Context) -> String? {
+        let named = context.amountsByCategory.keys.filter { text.range(of: $0, options: .caseInsensitive) != nil }
+        return named.count == 1 ? named[0] : nil
     }
 
     /// "NT$1150 on Food Delivery weekly", "Save NT$1150 in 7 days", "weekly spend of NT$1150".

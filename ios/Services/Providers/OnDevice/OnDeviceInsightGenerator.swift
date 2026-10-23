@@ -204,7 +204,7 @@ final class OnDeviceInsightGenerator: InsightGenerating {
             let targetCats = byAmount.filter { dietRelated.contains($0.category) }
             weeklyTargets = (targetCats.isEmpty ? Array(byAmount.prefix(2)) : targetCats)
                 .map { SpendingTargets.summary(category: $0.category.rawValue, monthlyAmount: Double($0.total)) }
-            guardrail = OutputGuardrail.Context(monthlyByCategory: byAmount.map(\.total),
+            guardrail = OutputGuardrail.Context(monthlyByCategory: Dictionary(uniqueKeysWithValues: byAmount.map { ($0.category.rawValue, $0.total) }),
                                                 extra: [Int(totalSpend), Int(totalSpend * 0.45)])
             let cat1 = topCats.first.map { "\($0.0) NT$\($0.1)" } ?? "Food Delivery NT$1500"
             let cat2 = topCats.dropFirst().first.map { "\($0.0) NT$\($0.1)" } ?? "Drinks NT$800"
