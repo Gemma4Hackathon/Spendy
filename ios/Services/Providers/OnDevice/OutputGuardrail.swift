@@ -15,6 +15,8 @@ nonisolated enum OutputGuardrail {
         case monthlyAsWeekly = "monthly_as_weekly"
         case labPromise = "lab_promise"
         case wrongCategory = "wrong_category"
+        case causalClaim = "causal_claim"
+        case offTopic = "off_topic"
     }
 
     struct Context {
@@ -63,6 +65,11 @@ nonisolated enum OutputGuardrail {
            amounts.contains(where: { !context.amountsByCategory[category, default: []].contains($0) && !context.sharedAmounts.contains($0) }) {
             violations.append(.wrongCategory)
         }
+        // "Late-night eating causes high glucose": a habit may contribute, it is not the diagnosis.
+        if matches(text, #"\b(causes?|caused|leads? to|led to|results? in)\b"#),
+           !matches(text, #"\b(may|can|could|might)\b"#) {
+            violations.append(.causalClaim)
+        }
         if isOutcome && promisesLabChange(text) {
             violations.append(.labPromise)
         }
@@ -78,11 +85,13 @@ nonisolated enum OutputGuardrail {
 
         init(context: Context) { self.context = context }
 
-        /// True when every text passes. A failing group is counted as replaced.
-        mutating func passes(_ texts: [String], outcome: String? = nil) -> Bool {
+        /// True when every text passes. A failing group is counted as replaced. `offTopic`:
+        /// the caller found the text is about something else (another spending category).
+        mutating func passes(_ texts: [String], outcome: String? = nil, offTopic: Bool = false) -> Bool {
             checked += 1
             let violations = texts.flatMap { check($0, context: context) }
                 + (outcome.map { check($0, context: context, isOutcome: true) } ?? [])
+                + (offTopic ? [.offTopic] : [])
             guard violations.isEmpty else {
                 replaced += 1
                 reasons += violations.map(\.rawValue)
@@ -106,9 +115,14 @@ nonisolated enum OutputGuardrail {
         }
     }
 
+    /// Spending categories a sentence names (lowercased).
+    static func categories(in text: String, context: Context) -> [String] {
+        context.amountsByCategory.keys.filter { text.range(of: $0, options: .caseInsensitive) != nil }
+    }
+
     /// The category a sentence is about, when it names exactly one.
     private static func onlyCategory(in text: String, context: Context) -> String? {
-        let named = context.amountsByCategory.keys.filter { text.range(of: $0, options: .caseInsensitive) != nil }
+        let named = categories(in: text, context: context)
         return named.count == 1 ? named[0] : nil
     }
 

@@ -21,6 +21,8 @@ struct OutputGuardrailTests {
         ("Cap Sugary Drinks spending at NT$150 per week.", .monthlyAsWeekly),
         // Phase 4 Finance checklist: NT$210 is the Food Delivery cap; Late Night is about NT$77/week.
         ("Limit Late Night spending to NT$210 per week.", .wrongCategory),
+        ("Late-night eating causes high blood sugar.", .causalClaim),
+        ("Frequent fast food leads to a higher Hemoglobin A1c.", .causalClaim),
     ])
     func catchesWhatTheModelGotWrong(text: String, expected: OutputGuardrail.Violation) {
         #expect(OutputGuardrail.check(text, context: context).contains(expected), "\(text)")
@@ -42,6 +44,8 @@ struct OutputGuardrailTests {
         "Reduce Late Night spending to NT$50/week to reduce exposure to high-calorie intake.",
         "Cut Fast Food spending to NT$70/week to reduce exposure to high-calorie intake that may contribute to Hemoglobin A1c.",
         "This may help support Glucose and Hemoglobin A1c levels.",
+        "Frequent Food Delivery purchases may contribute to Glucose 115mg/dL due to added sugar, refined carbs, or large portions.",
+        "Eating late can lead to higher blood sugar the next morning.",
     ])
     func acceptsCorrectSentences(text: String) {
         #expect(OutputGuardrail.check(text, context: context, isOutcome: true).isEmpty, "\(text)")

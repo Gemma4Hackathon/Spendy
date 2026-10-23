@@ -1,6 +1,11 @@
 import Foundation
 
-// MARK: - Insights context and prompt
+// MARK: - Insights: context, prompt and composition
+// Gemma 4 writes only the parts that need wording: the movement and food plan, and why each
+// spending habit may affect its health metric. Swift writes every fact and number: amounts,
+// weekly caps, actions and 7-day outcomes. Phase 4 rounds: the model spent 578 tokens (122 s)
+// restating amounts in every action, and its past mistakes (zero targets, monthly totals as
+// weekly, lab-value promises, another category's cap) were all in those fields.
 // Pure logic shared by the app, `swift test` and the Mac harness (bench/mac_insights), so a
 // prompt can be run on the Mac with Gemma 4 before it goes to the iPhone. The harness checks
 // it builds the same messages as the device (`messages_hash` in the [PERF] log).
@@ -21,43 +26,17 @@ nonisolated struct InsightContext {
         /// The spending category and its monthly total, when there is spending.
         let category: String?
         let monthly: Int?
-
-        // Swift-written text for advice the guardrail rejects.
-
-        var safeCauseDetail: String {
-            guard let category, let monthly else { return "Spending in this category adds up over the month." }
-            return "\(category) spending was NT$\(monthly) this month, about NT$\(SpendingTargets.weeklyPace(Double(monthly))) a week."
-        }
-
-        var safeRisk: String {
-            "This spending pattern may contribute to \(metric?.name ?? metricLabel)."
-        }
-
-        func safeAction(_ variant: Int) -> InsightAction {
-            guard let category, let monthly else {
-                return InsightAction(title: "Set a 7-day limit", description: "Pick one repeat purchase to cap this week.",
-                                     expectedOutcome: "One clear spending limit kept for 7 days.", timeframe: "7 days", difficulty: 1)
-            }
-            let pace = SpendingTargets.weeklyPace(Double(monthly))
-            let cap = SpendingTargets.weeklyCap(Double(monthly))
-            if variant == 0 {
-                return InsightAction(title: "Cap \(category) at NT$\(cap)/week",
-                                     description: "A weekly cap keeps \(category) about NT$\(max(0, pace - cap)) below the current pace.",
-                                     expectedOutcome: "Save about NT$\(max(0, pace - cap)) in 7 days.", timeframe: "7 days", difficulty: 2)
-            }
-            return InsightAction(title: "Skip one \(category) purchase",
-                                 description: "Replacing one repeat purchase is an easy first step.",
-                                 expectedOutcome: "One fewer \(category) purchase in 7 days.", timeframe: "7 days", difficulty: 1)
-        }
     }
 
     let riskScore: Int
     let monthlyAtRisk: Double
     let findings: [Finding]
-    /// Weekly pace, cap and saving per finding category, computed in Swift.
+    /// Weekly pace, cap and saving for the finding categories, computed in Swift.
     let weeklyTargets: [String]
     /// Abnormal metric names for the action plan, e.g. "Glucose, Hemoglobin A1c".
     let targetMetric: String
+    /// Metrics the report flagged; all metrics when none is flagged.
+    let flaggedMetrics: [HealthMetric]
     /// NT$ amounts the advice may mention (see OutputGuardrail).
     let guardrail: OutputGuardrail.Context
 
@@ -78,10 +57,7 @@ nonisolated struct InsightContext {
         let topCats = (byAmount.filter { dietRelated.contains($0.category) } + byAmount.filter { !dietRelated.contains($0.category) })
             .prefix(2)
             .map { ($0.category.rawValue, $0.total) }
-        // Every diet-related category gets a target, so the model never has to invent one.
-        let targetCats = byAmount.filter { dietRelated.contains($0.category) }
-        weeklyTargets = (targetCats.isEmpty ? Array(byAmount.prefix(2)) : targetCats)
-            .map { SpendingTargets.summary(category: $0.category.rawValue, monthlyAmount: Double($0.total)) }
+        weeklyTargets = topCats.map { SpendingTargets.summary(category: $0.0, monthlyAmount: Double($0.1)) }
         guardrail = OutputGuardrail.Context(monthlyByCategory: Dictionary(uniqueKeysWithValues: byAmount.map { ($0.category.rawValue, $0.total) }),
                                             extra: [Int(totalSpend), Int(totalSpend * 0.45)])
         let cat1 = topCats.first.map { "\($0.0) NT$\($0.1)" } ?? "Food Delivery NT$1500"
@@ -103,8 +79,11 @@ nonisolated struct InsightContext {
         targetMetric = abnormal.isEmpty
             ? "Blood pressure, glucose, triglycerides"
             : abnormal.prefix(3).map(\.name).joined(separator: ", ")
+        flaggedMetrics = abnormal.isEmpty ? health.metrics : abnormal
     }
 }
+
+// MARK: - Prompt
 
 nonisolated enum InsightPrompt {
 
@@ -118,15 +97,12 @@ nonisolated enum InsightPrompt {
         \(retryInstruction)
         The response MUST begin with { and end with }.
         Required top-level keys exactly: actionPlan, findings.
-        actionPlan MUST contain movement and food objects.
-        Each actionPlan object MUST contain title, recommendation, whyItMatters.
-        The findings array MUST contain 2 objects, each with causeDetail, risk, and exactly 2 actions.
-        Each action MUST contain title, description, expectedOutcome.
-        Do not output query_details, example_data, schema descriptions, markdown, comments, or text outside JSON.
+        actionPlan MUST contain movement and food objects, each with title and recommendation.
+        The findings array MUST contain 2 objects, each with risk.
+        Do not output markdown, comments, or text outside JSON.
         Do not use placeholders such as REPLACE.
         Do not use emojis.
         Use only the supplied Spending and Health values.
-        Make actions practical and concise: what to do, why it matters, and what can change in 7 days.
         """
     }
 
@@ -136,40 +112,49 @@ nonisolated enum InsightPrompt {
         health: HealthReport,
         context: InsightContext
     ) -> String {
-        let spendingLines = spendingLines(spending)
-        let healthLines = healthLines(health)
-
-        let finding = { (index: Int) -> String in
-            let frame = context.findings[index]
-            let action = #"{"title":"REPLACE short action","description":"REPLACE why this helps","expectedOutcome":"REPLACE 7-day result"}"#
-            return #"{"causeDetail":"REPLACE one sentence about \#(frame.cause)","risk":"REPLACE one sentence on how it affects \#(frame.metricLabel)","actions":[\#(action),\#(action)]}"#
+        let metrics = context.flaggedMetrics.map {
+            "\($0.name) \($0.value)\($0.unit) (normal \($0.normalRange))"
+        }.joined(separator: "; ")
+        let foodTarget = context.findings[0].category ?? "food delivery"
+        // The habit and the metric are spelled out, so each sentence stays on its own finding.
+        let risk = { (frame: InsightContext.Finding) -> String in
+            let habit = frame.category.map { "frequent \($0) purchases" } ?? frame.cause
+            let metric = frame.metric.map { "\($0.name) \($0.value)\($0.unit)" } ?? frame.metricLabel
+            let reasons = likelyReasons(for: frame.metric?.name ?? frame.metricLabel)
+            return #"{"risk":"REPLACE one sentence on how \#(habit) may contribute to \#(metric), naming one reason: \#(reasons)"}"#
         }
 
         return """
         TASK:
-        Generate health-and-spending risk insights using the data below.
+        Write a 7-day plan and explain two spending-and-health links using the data below.
 
         DATA:
         User: \(profile.age)yo \(profile.gender), BMI \(String(format: "%.1f", profile.bmi)).
-        Spending this month (monthly totals): \(spendingLines).
-        Health metrics: \(healthLines).
+        Spending this month (monthly totals): \(spendingLines(spending)).
+        Health metrics flagged by the report: \(metrics).
         Weekly targets: \(context.weeklyTargets.joined(separator: "; ")).
 
         REQUIRED OUTPUT:
-        Return one JSON object matching this schema exactly:
-        {"actionPlan":{"movement":{"title":"REPLACE movement title","recommendation":"REPLACE with daily walking, jogging, or cycling duration","whyItMatters":"REPLACE with concise may help support language tied to \(context.targetMetric)"},"food":{"title":"REPLACE food title","recommendation":"REPLACE with specific delivery, fast food, sugar drink, or grocery swap target","whyItMatters":"REPLACE with concise helps reduce exposure language tied to \(context.targetMetric)"}},"findings":[\(finding(0)),\(finding(1))]}
+        Return one JSON object on a single line matching this schema exactly:
+        {"actionPlan":{"movement":{"title":"REPLACE movement title","recommendation":"REPLACE daily walking, jogging, or cycling minutes"},"food":{"title":"REPLACE food title","recommendation":"REPLACE one swap or limit for \(foodTarget)"}},"findings":[\(risk(context.findings[0])),\(risk(context.findings[1]))]}
 
         RULES:
-        Replace every REPLACE value with a concrete sentence based on DATA.
-        Every action title must start with a verb and include either a frequency, limit, or NT$ target.
-        Use the Weekly targets for every NT$ cap and saving. Never set a category to zero.
-        A 7-day saving is the weekly saving in Weekly targets, never a monthly total.
-        Every action description must connect the spending behavior to the health metric.
-        Every expectedOutcome must be a spending or habit result measurable in 7 days (NT$ saved, drinks or orders skipped, minutes walked), never a change in a lab value or a diagnosis.
-        Every risk sentence must say the habit may contribute, not that it caused the lab value.
-        Do not create generic example data.
-        Do not include query_details or example_data.
+        Replace every REPLACE value with one concrete sentence based on DATA.
+        Each title starts with a verb and has at most 8 words.
+        If you name an NT$ amount, use the Weekly targets. Never set a category to zero.
+        Each risk sentence says the habit may contribute, not that it caused the value.
+        Do not promise that a lab value will improve or change.
         """
+    }
+
+    /// Diet reasons that plausibly relate to a metric, so a 2B model is not left to pick the
+    /// physiology (phase 4 Mac run: "high sodium" given as a reason for HbA1c).
+    static func likelyReasons(for metric: String) -> String {
+        let name = metric.lowercased()
+        if ["glucose", "a1c", "sugar"].contains(where: name.contains) { return "added sugar, refined carbs, or large portions" }
+        if ["cholesterol", "ldl", "hdl", "triglyceride"].contains(where: name.contains) { return "fried food, fatty meat, or added sugar" }
+        if name.contains("pressure") { return "salt or large portions" }
+        return "added sugar, salt, or fried food"
     }
 
     static func retry(_ userMessage: String) -> String {
@@ -180,9 +165,8 @@ nonisolated enum InsightPrompt {
         Your previous response was invalid because it did not contain top-level actionPlan and findings.
         Output only the required JSON object now.
         The first character must be {.
-        Include actionPlan.movement and actionPlan.food with title, recommendation, whyItMatters.
-        The top-level object must contain a findings array with exactly 2 findings.
-        Each finding must contain causeDetail, risk, and exactly 2 concise actions.
+        Include actionPlan.movement and actionPlan.food with title and recommendation.
+        The top-level object must contain a findings array with exactly 2 findings, each with risk.
         """
     }
 
@@ -199,5 +183,152 @@ nonisolated enum InsightPrompt {
         health.metrics.map {
             "\($0.name) \($0.value)\($0.unit) (normal \($0.normalRange), status \($0.status.rawValue))"
         }.joined(separator: "; ")
+    }
+}
+
+// MARK: - Swift-written text
+
+nonisolated enum InsightTemplates {
+
+    static func causeDetail(category: String?, monthly: Int?) -> String {
+        guard let category, let monthly else { return "Spending in this category adds up over the month." }
+        return "\(category) spending was NT$\(monthly) this month, about NT$\(SpendingTargets.weeklyPace(Double(monthly))) a week."
+    }
+
+    static func risk(metricName: String) -> String {
+        "This spending pattern may contribute to \(metricName)."
+    }
+
+    /// A weekly cap (when it saves at least NT$10 a week) and a category-specific swap.
+    static func actions(category: String?, monthly: Int?) -> [InsightAction] {
+        guard let category, let monthly else {
+            return [
+                InsightAction(title: "Set a 7-day limit", description: "Pick one repeat purchase to cap this week.",
+                              expectedOutcome: "One clear spending limit kept for 7 days.", timeframe: "7 days", difficulty: 1),
+                swap(for: "Other"),
+            ]
+        }
+        let pace = SpendingTargets.weeklyPace(Double(monthly))
+        let cap = SpendingTargets.weeklyCap(Double(monthly))
+        guard pace - cap >= 10 else {
+            // Too small for a cap to mean anything ("save NT$0", a cap above the current pace).
+            return [swap(for: category),
+                    InsightAction(title: "Track every \(category) purchase this week",
+                                  description: "Seeing each purchase makes the next one a choice.",
+                                  expectedOutcome: "A full 7-day log of \(category) purchases.", timeframe: "7 days", difficulty: 1)]
+        }
+        return [
+            InsightAction(title: "Cap \(category) at NT$\(cap)/week",
+                          description: "\(category) runs about NT$\(pace) a week now; a NT$\(cap) cap saves NT$\(pace - cap).",
+                          expectedOutcome: "Save about NT$\(pace - cap) in 7 days.", timeframe: "7 days", difficulty: 2),
+            swap(for: category),
+        ]
+    }
+
+    private static func swap(for category: String) -> InsightAction {
+        let (title, why, outcome): (String, String, String) = switch category {
+        case "Sugary Drinks":
+            ("Swap 2 sugary drinks for water or unsweetened tea", "Each swap removes a drink's worth of added sugar.", "2 fewer sugary drinks in 7 days.")
+        case "Food Delivery":
+            ("Cook or pack lunch on 2 days", "Home meals make portions, oil and salt easier to control than delivery.", "2 fewer delivery orders in 7 days.")
+        case "Fast Food":
+            ("Replace 1 fast-food meal with a home meal", "Fast food is usually high in fried food, salt and refined carbs.", "1 fewer fast-food meal in 7 days.")
+        case "Dining Out":
+            ("Choose a grilled or steamed dish twice", "Grilled and steamed dishes carry less oil than fried ones.", "2 lighter restaurant meals in 7 days.")
+        case "Convenience Store":
+            ("Skip the snack add-on on 3 store visits", "Snack add-ons bring sugar and salt without much fullness.", "3 store visits without a snack in 7 days.")
+        case "Coffee":
+            ("Order 2 coffees without syrup or sugar", "Sweetened coffee drinks add sugar on top of the caffeine.", "2 unsweetened coffees in 7 days.")
+        case "Late Night":
+            ("Skip late-night food orders on 3 nights", "Eating late may affect sleep and next-morning blood sugar.", "3 nights without a late-night order in 7 days.")
+        case "Groceries":
+            ("Plan 3 home meals before shopping", "A short list keeps snacks and sugary extras out of the basket.", "3 planned home meals in 7 days.")
+        case "Entertainment":
+            ("Make 1 outing an active one", "A walk, hike or sport adds movement to time you already spend out.", "1 active outing in 7 days.")
+        default:
+            ("Skip one repeat purchase", "Skipping one repeat purchase is an easy first step.", "1 skipped repeat purchase in 7 days.")
+        }
+        return InsightAction(title: title, description: why, expectedOutcome: outcome, timeframe: "7 days", difficulty: 1)
+    }
+
+    static func whyItMatters(movement: Bool, targetMetric: String, foodCategory: String?) -> String {
+        if movement { return "Regular movement may help support \(targetMetric)." }
+        return "Fewer \(foodCategory ?? "takeout") purchases may help support \(targetMetric)."
+    }
+
+    static func fallbackPlan(context: InsightContext) -> InsightActionPlan {
+        InsightActionPlan(
+            movement: InsightPlanItem(
+                title: "Walk or jog 25 minutes daily",
+                recommendation: "Do a brisk walk or easy jog for 25 minutes on at least 5 days this week.",
+                whyItMatters: whyItMatters(movement: true, targetMetric: context.targetMetric, foodCategory: nil),
+                targetMetric: context.targetMetric, timeframe: "Next 7 days"),
+            food: InsightPlanItem(
+                title: "Replace two delivery meals",
+                recommendation: "Swap two delivery, fast food, or late-night meals for home meals with lean protein and vegetables.",
+                whyItMatters: whyItMatters(movement: false, targetMetric: context.targetMetric, foodCategory: context.findings.first?.category),
+                targetMetric: context.targetMetric, timeframe: "Next 7 days"))
+    }
+}
+
+// MARK: - Composition
+
+nonisolated enum InsightComposer {
+
+    /// The result and how many model fields the guardrail checked or replaced; nil when the
+    /// answer has no usable model field at all (the caller retries).
+    static func compose(_ answer: [String: Any], context: InsightContext, health: HealthReport)
+        -> (result: InsightResult, audit: OutputGuardrail.Audit)? {
+        var audit = OutputGuardrail.Audit(context: context.guardrail)
+        let plan = answer["actionPlan"] as? [String: Any]
+        let fallback = InsightTemplates.fallbackPlan(context: context)
+        var modelFields = 0
+
+        func planItem(_ key: String, fallback: InsightPlanItem) -> InsightPlanItem {
+            let item = plan?[key] as? [String: Any]
+            guard let title = text(item?["title"]), let recommendation = text(item?["recommendation"]) else { return fallback }
+            modelFields += 1
+            guard audit.passes([title], outcome: recommendation) else { return fallback }
+            return InsightPlanItem(title: title, recommendation: recommendation, whyItMatters: fallback.whyItMatters,
+                                   targetMetric: context.targetMetric, timeframe: "Next 7 days")
+        }
+        let actionPlan = InsightActionPlan(movement: planItem("movement", fallback: fallback.movement),
+                                           food: planItem("food", fallback: fallback.food))
+
+        let answered = answer["findings"] as? [[String: Any]] ?? []
+        let findings = context.findings.enumerated().map { index, frame in
+            let metricName = frame.metric?.name ?? frame.metricLabel
+            var risk = InsightTemplates.risk(metricName: metricName)
+            if index < answered.count, let written = text(answered[index]["risk"]) {
+                modelFields += 1
+                // A risk sentence about another category is a wrong link (phase 4 Mac run:
+                // "sugary drinks" in the Food Delivery finding).
+                let others = OutputGuardrail.categories(in: written, context: context.guardrail)
+                    .filter { $0 != frame.category?.lowercased() }
+                if audit.passes([written], offTopic: !others.isEmpty) { risk = written }
+            }
+            // Health facts come from the report, not from the model's wording.
+            let healthDetail = frame.metric.map { metric in
+                let range = metric.normalRange.isEmpty ? "" : " (reference \(metric.normalRange))"
+                return "\(metric.name) \(metric.value)\(metric.unit.isEmpty ? "" : " \(metric.unit)") is \(metric.status.rawValue)\(range)."
+            } ?? frame.metricLabel
+            return InsightConnection(
+                icon: frame.icon, cause: frame.cause,
+                causeDetail: InsightTemplates.causeDetail(category: frame.category, monthly: frame.monthly),
+                healthImpact: metricName, healthDetail: healthDetail, risk: risk, accentColor: frame.accentColor,
+                actions: InsightTemplates.actions(category: frame.category, monthly: frame.monthly))
+        }
+
+        guard modelFields > 0 else { return nil }
+        let result = InsightResult(keyFindings: findings, overallRiskScore: context.riskScore,
+                                   monthlySpendingAtRisk: context.monthlyAtRisk, generatedAt: Date(), actionPlan: actionPlan)
+        return (result, audit)
+    }
+
+    /// Non-empty trimmed text; a copied REPLACE template counts as missing.
+    private static func text(_ value: Any?) -> String? {
+        guard let string = value as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed.contains("REPLACE") ? nil : trimmed
     }
 }

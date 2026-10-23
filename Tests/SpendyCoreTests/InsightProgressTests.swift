@@ -1,17 +1,10 @@
 import Testing
 @testable import SpendyCore
 
-/// Prefixes of a real streamed Insights answer (phase3-insights-confirm, shortened).
+/// Prefixes of a real streamed Insights answer (InsightAnswers.correct).
 struct InsightProgressTests {
 
-    private let answer = """
-    {"actionPlan":{"movement":{"title":"Increase daily walking","recommendation":"Aim for 30 minutes.","whyItMatters":"May help."},\
-    "food":{"title":"Reduce Food Delivery spending","recommendation":"Cap at NT$210 per week.","whyItMatters":"Helps."}},\
-    "findings":[{"causeDetail":"Food Delivery is the largest category.","risk":"May contribute to Glucose.",\
-    "actions":[{"title":"Cap Food Delivery at NT$210/week","description":"d","expectedOutcome":"Save NT$77 in 7 days"}]},\
-    {"causeDetail":"Fast Food adds up.","risk":"May contribute to Hemoglobin A1c.",\
-    "actions":[{"title":"Cap Fast Food at NT$70/week","description":"d","expectedOutcome":"Save NT$28 in 7 days"}]}]}
-    """
+    private let answer = InsightAnswers.correct.trimmingCharacters(in: .whitespacesAndNewlines)
 
     private func progress(upTo marker: String) -> InsightProgress {
         let end = answer.range(of: marker)!.lowerBound
@@ -19,30 +12,30 @@ struct InsightProgressTests {
     }
 
     @Test func nothingFinishedWhileWritingTheFirstSection() {
-        let p = progress(upTo: "\"whyItMatters\":\"May help.")
+        let p = progress(upTo: "\"recommendation\":\"Aim for")
         #expect(p.finished.isEmpty)
         #expect(p.current == .movement)
     }
 
     @Test func sectionFinishesWhenTheNextOneStarts() {
-        let p = progress(upTo: "\"recommendation\":\"Cap at")
-        #expect(p.finished[.movement] == "Increase daily walking")
+        let p = progress(upTo: "\"recommendation\":\"Limit Food")
+        #expect(p.finished[.movement] == "Increase daily physical activity")
         #expect(p.current == .food)
     }
 
     @Test func firstFindingFinishesWhenTheSecondStarts() {
-        let p = progress(upTo: "\"causeDetail\":\"Fast Food")
-        #expect(p.finished[.food] == "Reduce Food Delivery spending")
-        #expect(p.finished[.finding1] == "Cap Food Delivery at NT$210/week")
+        let p = progress(upTo: "\"risk\":\"Frequent Fast Food")
+        #expect(p.finished[.food] == "Reduce food delivery spending")
+        #expect(p.finished[.finding1] == "")
         #expect(p.current == .finding2)
         #expect(!p.isComplete)
     }
 
     @Test func completeAnswerFinishesEveryStep() {
-        let p = InsightProgress.from(partial: answer, tokens: 474)
+        let p = InsightProgress.from(partial: answer, tokens: 182)
         #expect(p.current == nil)
         #expect(p.isComplete)
-        #expect(p.finished[.finding2] == "Cap Fast Food at NT$70/week")
+        #expect(p.finished[.finding2] == "")
     }
 
     @Test func emptyOrProseHasNoProgress() {

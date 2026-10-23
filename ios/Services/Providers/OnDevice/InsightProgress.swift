@@ -37,11 +37,11 @@ nonisolated struct InsightProgress: Equatable, Sendable {
         if findings != nil || complete {
             progress.finished[.food] = title(plan?["food"] as? [String: Any])
         }
+        // A finding is one risk sentence; its actions are written in Swift (InsightComposer).
         for (index, step) in [Step.finding1, .finding2].enumerated() {
             let count = findings?.count ?? 0
-            guard count > index + 1 || (complete && count > index), let finding = findings?[index] else { continue }
-            let firstAction = (finding["actions"] as? [[String: Any]])?.first
-            progress.finished[step] = title(firstAction)
+            guard count > index + 1 || (complete && count > index) else { continue }
+            progress.finished[step] = ""
         }
         progress.isComplete = complete && progress.current == nil
         return progress
