@@ -83,6 +83,9 @@ nonisolated enum HealthReportVerifier {
             let reference = Reference.match(tokens(candidate.name))
             let key = reference?.key ?? normalizedKey(candidate.name)
             guard !seenKeys.contains(key) else { continue }
+            // Risk estimates ("8-Year Diabetes Risk 7%") are computed, not measured, and are
+            // rated on a graphic scale Swift cannot read, so no status shown for them is trustworthy.
+            if reference == nil, isEstimate(candidate.name) { continue }
             // An OCR misread can still be "on the report" ("2.0" read as "20" for a ratio).
             if let plausible = plausibleReadings[key], let number = Double(value), !plausible.contains(number) { continue }
 
@@ -363,6 +366,10 @@ nonisolated enum HealthReportVerifier {
 
     private static func normalizedKey(_ name: String) -> String {
         tokens(name).joined(separator: " ")
+    }
+
+    private static func isEstimate(_ name: String) -> Bool {
+        !Set(tokens(name)).isDisjoint(with: ["risk", "score"])
     }
 
     /// The model's name with OCR-typo words replaced ("LDL Cholestejol" -> "LDL Cholesterol").

@@ -72,6 +72,18 @@ struct HealthReportVerifierTests {
         #expect(HealthReportVerifier.verify([invented], lines: Fixtures.flatScanPhase3, requireSameRow: false).isEmpty)
     }
 
+    @Test func riskEstimateIsNotShownAsALabResult() {
+        // Phase 4 diag, screen photo: Gemma 4 also returned "Diabetes Risk 7%". The report prints
+        // it, but rates it on a graphic scale ("Slightly Increased"), so the app showed "Normal".
+        let candidates = [
+            MetricCandidate(name: "Glucose", value: "115", unit: "mg/dL", normalRange: "", modelStatus: nil),
+            MetricCandidate(name: "Hemoglobin A1c", value: "6.1", unit: "% of total Hgb", normalRange: "", modelStatus: nil),
+            MetricCandidate(name: "Diabetes Risk", value: "7", unit: "%", normalRange: "", modelStatus: nil),
+        ]
+        let metrics = HealthReportVerifier.verify(candidates, lines: Fixtures.screenPhoto, requireSameRow: false)
+        #expect(metrics.map(\.key).sorted() == ["glucose", "hba1c"])
+    }
+
     @Test func standaloneNumbersSkipRangeBounds() {
         #expect(HealthReportVerifier.standaloneNumbers(in: "65-99 mg/dL: See Note 1") == [1])
         #expect(HealthReportVerifier.standaloneNumbers(in: "< 150 mg/dL") == [])

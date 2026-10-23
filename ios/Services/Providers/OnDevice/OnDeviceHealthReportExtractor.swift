@@ -117,7 +117,9 @@ final class OnDeviceHealthReportExtractor: HealthReportExtracting {
 
         var visionCandidates: [MetricCandidate]? = nil
         var verifiedVisionCount = 0
-        if metrics.count < minimumMetricCount {
+        // A vision value is kept only if OCR read the same number, so with no digits in the OCR
+        // text vision cannot add anything (a landscape photo: 19 s and a 1.5 GB peak for nothing).
+        if metrics.count < minimumMetricCount, ocrText.contains(where: \.isNumber) {
             if isModelReady { onStage(.visionFallback) }
             visionCandidates = await visionCandidatesIfReady(imageData: imageData)
             let verifiedVision = HealthReportVerifier.verify(visionCandidates ?? [], lines: lines, requireSameRow: true)
