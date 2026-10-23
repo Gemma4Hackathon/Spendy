@@ -14,12 +14,16 @@ let package = Package(
             path: "ios",
             sources: [
                 "Models/HealthReport.swift",
+                "Models/SpendingEntry.swift",
+                "Models/UserProfile.swift",
+                "Models/InsightResult.swift",
                 "Services/Providers/OnDevice/LenientJSON.swift",
                 "Services/Providers/OnDevice/HealthReportVerifier.swift",
                 "Services/Providers/OnDevice/SpendingTargets.swift",
                 "Services/Providers/OnDevice/OCRPromptBuilder.swift",
                 "Services/Providers/OnDevice/OutputGuardrail.swift",
                 "Services/Providers/OnDevice/InsightProgress.swift",
+                "Services/Providers/OnDevice/InsightComposer.swift",
             ]
         ),
         .testTarget(
